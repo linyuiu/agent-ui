@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+backend/.venv/
+backend/.env
+
+# uv
+.uv/
+
+# Env files
+.env
+.env.*
+
+# Logs
+*.log
+
+# Node / Vite
+ui/node_modules/
+ui/dist/
+ui/dist/*.lock
+ui/dist/*-lock.json
+*.lock
+*-lock.json
+
+
+.vite/
+
+# IDE
+.idea/
+!.idea/icon.png
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
