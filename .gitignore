@@ -18,8 +18,6 @@ backend/.env
 .uv/
 
 # Env files
-.env
-.env.*
 
 # Logs
 *.log
