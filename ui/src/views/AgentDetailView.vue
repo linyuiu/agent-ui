@@ -25,6 +25,10 @@
           <span class="label">Last run</span>
           <span>{{ formatTime(agent.last_run) }}</span>
         </div>
+        <div v-if="agent.url">
+          <span class="label">URL</span>
+          <a class="link" :href="agent.url" target="_blank" rel="noopener">打开链接</a>
+        </div>
       </div>
 
       <div class="chips">
@@ -147,6 +151,16 @@ watch(
   font-size: 12px;
   color: #6a7a80;
   margin-bottom: 4px;
+}
+
+.link {
+  color: #0c7e85;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.link:hover {
+  text-decoration: underline;
 }
 
 .chips {

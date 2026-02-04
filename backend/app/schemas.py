@@ -16,6 +16,7 @@ class RegisterRequest(_PasswordBase):
 class UserPublic(BaseModel):
     id: int
     email: EmailStr
+    role: str
 
 
 class LoginResponse(BaseModel):
@@ -40,6 +41,7 @@ class AgentSummary(BaseModel):
     owner: str
     last_run: str
     description: str
+    url: str
 
 
 class AgentDetail(AgentSummary):
@@ -57,6 +59,52 @@ class ModelSummary(BaseModel):
 
 
 class ModelDetail(ModelSummary):
+    pricing: str
+    release: str
+    tags: list[str]
+
+
+class PolicyBase(BaseModel):
+    name: str
+    effect: str
+    actions: list[str]
+    resource_type: str
+    resource_id: str | None = None
+    subject_attrs: dict
+    resource_attrs: dict
+    enabled: bool = True
+
+
+class PolicyCreate(PolicyBase):
+    pass
+
+
+class PolicyUpdate(PolicyBase):
+    pass
+
+
+class PolicyOut(PolicyBase):
+    id: int
+
+
+class AgentImportRequest(BaseModel):
+    api_url: str
+    ak: str
+    sk: str
+
+
+class AgentImportResponse(BaseModel):
+    imported: int
+    agents: list[AgentDetail]
+
+
+class ModelCreate(BaseModel):
+    id: str
+    name: str
+    provider: str
+    status: str
+    context_length: int
+    description: str
     pricing: str
     release: str
     tags: list[str]

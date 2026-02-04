@@ -10,6 +10,7 @@ def main() -> None:
 
     email = os.getenv("SEED_EMAIL", "demo@example.com")
     password = os.getenv("SEED_PASSWORD", "Demo1234")
+    role = os.getenv("SEED_ROLE", "admin")
 
     db = SessionLocal()
     try:
@@ -22,7 +23,11 @@ def main() -> None:
             print(f"User already exists: {email}")
             return
 
-        user = models.User(email=email, password_hash=security.hash_password(password))
+        user = models.User(
+            email=email,
+            password_hash=security.hash_password(password),
+            role=role,
+        )
         db.add(user)
         db.commit()
         print(f"Created user: {email}")

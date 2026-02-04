@@ -5,6 +5,7 @@ import AgentsListView from './views/AgentsListView.vue'
 import AgentDetailView from './views/AgentDetailView.vue'
 import ModelsListView from './views/ModelsListView.vue'
 import ModelDetailView from './views/ModelDetailView.vue'
+import AdminView from './views/AdminView.vue'
 
 const routes = [
   { path: '/', redirect: '/login' },
@@ -38,6 +39,12 @@ const routes = [
         name: 'home-model-detail',
         component: ModelDetailView,
         meta: { requiresAuth: true, module: 'models' },
+      },
+      {
+        path: 'admin',
+        name: 'home-admin',
+        component: AdminView,
+        meta: { requiresAuth: true, module: 'admin' },
       },
     ],
   },

@@ -29,6 +29,16 @@
         <div class="card-meta">
           <span>Owner: {{ agent.owner }}</span>
           <span>Last run: {{ formatTime(agent.last_run) }}</span>
+          <a
+            v-if="agent.url"
+            class="link"
+            :href="agent.url"
+            target="_blank"
+            rel="noopener"
+            @click.stop
+          >
+            打开链接
+          </a>
         </div>
       </button>
     </div>
@@ -149,6 +159,16 @@ onMounted(loadAgents)
   gap: 4px;
   font-size: 12px;
   color: #6a7a80;
+}
+
+.link {
+  color: #0c7e85;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.link:hover {
+  text-decoration: underline;
 }
 
 .tag {

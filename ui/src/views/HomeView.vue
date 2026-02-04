@@ -84,6 +84,10 @@ const handleModuleClick = async (id: string) => {
     await router.push({ name: 'home-models' })
     return
   }
+  if (id === 'admin') {
+    await router.push({ name: 'home-admin' })
+    return
+  }
   await router.push({ name: 'home-agents' })
 }
 
@@ -99,6 +103,13 @@ const loadModules = async () => {
 
   try {
     modules.value = await fetchModules()
+    const activeModuleId = route.meta.module as string | undefined
+    if (activeModuleId && !modules.value.some((item) => item.id === activeModuleId)) {
+      const first = modules.value[0]?.id
+      if (first) {
+        await handleModuleClick(first)
+      }
+    }
   } catch (err) {
     error.value = err instanceof Error ? err.message : '模块加载失败'
   } finally {
