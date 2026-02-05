@@ -8,30 +8,93 @@
       <header class="card__header">
         <p class="eyebrow">Agent UI</p>
         <h1>欢迎回来</h1>
-        <p class="subtitle">使用邮箱和密码登录，继续你的工作流。</p>
+        <p class="subtitle">使用账号和密码登录，继续你的工作流。</p>
       </header>
 
       <form class="form" @submit.prevent="handleSubmit">
         <label class="field">
-          <span>邮箱</span>
+          <span>账号</span>
           <input
-            v-model="email"
-            type="email"
-            placeholder="you@example.com"
-            autocomplete="email"
+            v-model="account"
+            type="text"
+            placeholder="demo"
+            autocomplete="username"
             required
           />
         </label>
 
         <label class="field">
           <span>密码</span>
-          <input
-            v-model="password"
-            type="password"
-            placeholder="至少 6 位"
-            autocomplete="current-password"
-            required
-          />
+          <div class="input-wrap">
+            <input
+              v-model="password"
+              :type="showPassword ? 'text' : 'password'"
+              placeholder="至少 6 位"
+              autocomplete="current-password"
+              required
+            />
+            <button
+              class="toggle"
+              type="button"
+              :aria-pressed="showPassword"
+              :aria-label="showPassword ? '隐藏密码' : '显示密码'"
+              @click="showPassword = !showPassword"
+            >
+              <svg
+                v-if="showPassword"
+                class="eye-icon"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path
+                  d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+                <circle
+                  cx="12"
+                  cy="12"
+                  r="3"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                />
+              </svg>
+              <svg
+                v-else
+                class="eye-icon"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path
+                  d="M3 4.5 21 19.5"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                />
+                <path
+                  d="M6.6 7.3C4.2 9 2.7 12 2.7 12s3.5 7 10 7c2.2 0 4.1-.7 5.6-1.7"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+                <path
+                  d="M9 5.5a9.7 9.7 0 0 1 3-.5c6.5 0 10 7 10 7s-1.4 2.7-4.4 4.7"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </button>
+          </div>
         </label>
 
         <button class="submit" type="submit" :disabled="loading">
@@ -56,8 +119,9 @@ import { useRouter } from 'vue-router'
 
 const router = useRouter()
 
-const email = ref('')
+const account = ref('')
 const password = ref('')
+const showPassword = ref(false)
 const loading = ref(false)
 const error = ref('')
 
@@ -74,7 +138,7 @@ const handleSubmit = async () => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        email: email.value,
+        account: account.value,
         password: password.value,
       }),
     })
@@ -93,6 +157,31 @@ const handleSubmit = async () => {
     }
     if (payload?.user?.email) {
       localStorage.setItem('user_email', payload.user.email)
+    }
+    if (payload?.user?.username) {
+      localStorage.setItem('user_name', payload.user.username)
+    }
+    if (payload?.user?.account) {
+      localStorage.setItem('user_account', payload.user.account)
+    }
+    if (payload?.user?.role) {
+      localStorage.setItem('user_role', payload.user.role)
+    }
+
+    if (token) {
+      try {
+        const permResponse = await fetch(`${apiBase}/auth/permissions`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        })
+        if (permResponse.ok) {
+          const permPayload = await permResponse.json()
+          localStorage.setItem('user_permissions', JSON.stringify(permPayload))
+        }
+      } catch {
+        // ignore permission fetch failures on login
+      }
     }
 
     await router.push({ name: 'home-agents' })
@@ -200,6 +289,47 @@ const handleSubmit = async () => {
   font-size: 15px;
   background: #fff;
   transition: border 0.2s ease, box-shadow 0.2s ease;
+}
+
+.input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.input-wrap input {
+  width: 100%;
+  padding-right: 68px;
+}
+
+.toggle {
+  position: absolute;
+  right: 10px;
+  border: none;
+  background: rgba(15, 179, 185, 0.08);
+  color: #0a7e84;
+  padding: 6px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.2s ease, transform 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.toggle:hover {
+  background: rgba(15, 179, 185, 0.16);
+  transform: translateY(-1px);
+}
+
+.toggle:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(15, 179, 185, 0.2);
+}
+
+.eye-icon {
+  width: 18px;
+  height: 18px;
 }
 
 .field input:focus {

@@ -8,6 +8,8 @@ from app.db import Base, SessionLocal, engine
 def main() -> None:
     Base.metadata.create_all(bind=engine)
 
+    account = os.getenv("SEED_ACCOUNT", "demo")
+    username = os.getenv("SEED_USERNAME", "Demo User")
     email = os.getenv("SEED_EMAIL", "demo@example.com")
     password = os.getenv("SEED_PASSWORD", "Demo1234")
     role = os.getenv("SEED_ROLE", "admin")
@@ -16,21 +18,23 @@ def main() -> None:
     try:
         existing = (
             db.query(models.User)
-            .filter(models.User.email == email)
+            .filter(models.User.account == account)
             .first()
         )
         if existing:
-            print(f"User already exists: {email}")
+            print(f"User already exists: {account}")
             return
 
         user = models.User(
+            account=account,
+            username=username,
             email=email,
             password_hash=security.hash_password(password),
             role=role,
         )
         db.add(user)
         db.commit()
-        print(f"Created user: {email}")
+        print(f"Created user: {account}")
     finally:
         db.close()
 

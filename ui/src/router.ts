@@ -6,6 +6,8 @@ import AgentDetailView from './views/AgentDetailView.vue'
 import ModelsListView from './views/ModelsListView.vue'
 import ModelDetailView from './views/ModelDetailView.vue'
 import AdminView from './views/AdminView.vue'
+import InfoView from './views/InfoView.vue'
+import PasswordView from './views/PasswordView.vue'
 
 const routes = [
   { path: '/', redirect: '/login' },
@@ -45,6 +47,61 @@ const routes = [
         name: 'home-admin',
         component: AdminView,
         meta: { requiresAuth: true, module: 'admin' },
+      },
+      {
+        path: 'account/password',
+        name: 'home-password',
+        component: PasswordView,
+        meta: {
+          requiresAuth: true,
+          module: 'admin',
+          title: '修改密码',
+          description: '为当前登录账户设置新的密码。',
+        },
+      },
+      {
+        path: 'account/apikey',
+        name: 'home-apikey',
+        component: InfoView,
+        meta: {
+          requiresAuth: true,
+          module: 'admin',
+          title: 'API Key',
+          description: '管理调用接口所需的密钥与权限。',
+        },
+      },
+      {
+        path: 'account/language',
+        name: 'home-language',
+        component: InfoView,
+        meta: {
+          requiresAuth: true,
+          module: 'admin',
+          title: '语言',
+          description: '设置界面显示语言与时区偏好。',
+        },
+      },
+      {
+        path: 'account/about',
+        name: 'home-about',
+        component: InfoView,
+        meta: {
+          requiresAuth: true,
+          module: 'admin',
+          title: '关于',
+          description: '查看当前系统版本与服务状态。',
+        },
+      },
+      {
+        path: 'account/help',
+        name: 'home-help',
+        component: InfoView,
+        meta: {
+          requiresAuth: true,
+          module: 'admin',
+          title: '帮助',
+          description: '查看使用指引与常见问题。',
+        },
       },
     ],
   },

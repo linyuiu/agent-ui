@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, EmailStr, Field
 
 
@@ -6,23 +8,160 @@ class _PasswordBase(BaseModel):
 
 
 class LoginRequest(_PasswordBase):
-    email: EmailStr
+    account: str = Field(min_length=2, max_length=64)
 
 
 class RegisterRequest(_PasswordBase):
+    account: str = Field(min_length=2, max_length=64)
+    username: str = Field(min_length=1, max_length=64)
     email: EmailStr
 
 
 class UserPublic(BaseModel):
     id: int
+    account: str
+    username: str
     email: EmailStr
     role: str
+    status: str
+    source: str
+    workspace: str
+
+
+class AdminUserCreate(_PasswordBase):
+    account: str = Field(min_length=2, max_length=64)
+    username: str = Field(min_length=1, max_length=64)
+    email: EmailStr
+    role: str = "user"
+    status: str = "active"
+    source: str = "local"
+    workspace: str = "default"
+
+
+class AdminUserUpdate(BaseModel):
+    account: str | None = None
+    username: str | None = None
+    email: EmailStr | None = None
+    role: str | None = None
+    status: str | None = None
+    source: str | None = None
+    workspace: str | None = None
+    password: str | None = None
+
+
+class AdminUserOut(BaseModel):
+    id: int
+    account: str
+    username: str
+    email: EmailStr
+    role: str
+    status: str
+    source: str
+    workspace: str
+    created_at: datetime
+
+
+class RoleCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=50)
+    description: str | None = None
+
+
+class RoleOut(BaseModel):
+    id: int
+    name: str
+    description: str
+
+
+class PermissionGrantBase(BaseModel):
+    subject_type: str = Field(pattern="^(user|role)$")
+    subject_id: str
+    scope: str = Field(pattern="^(menu|resource)$")
+    resource_type: str
+    resource_id: str | None = None
+    action: str = Field(pattern="^(view|edit|manage)$")
+
+
+class PermissionGrantCreate(PermissionGrantBase):
+    pass
+
+
+class PermissionGrantOut(PermissionGrantBase):
+    id: int
+    created_at: datetime
+
+
+class MenuPermission(BaseModel):
+    menu_id: str
+    actions: list[str]
+
+
+class ResourcePermission(BaseModel):
+    resource_type: str
+    resource_id: str | None = None
+    actions: list[str]
+
+
+class PermissionSummary(BaseModel):
+    menus: list[MenuPermission]
+    resources: list[ResourcePermission]
+
+
+class PermissionSubjectItem(BaseModel):
+    resource_type: str
+    resource_id: str | None = None
+    actions: list[str] = []
+
+
+class PermissionSubjectMatrixItem(PermissionSubjectItem):
+    inherited_actions: list[str] = []
+
+
+class PermissionSubjectSummary(BaseModel):
+    subject_type: str
+    subject_id: str
+    scope: str
+    role: str | None = None
+    read_only: bool = False
+    items: list[PermissionSubjectMatrixItem] = []
+
+
+class PermissionSubjectUpdate(BaseModel):
+    subject_type: str = Field(pattern="^(user|role)$")
+    subject_id: str
+    scope: str = Field(pattern="^(menu|resource)$")
+    items: list[PermissionSubjectItem] = []
 
 
 class LoginResponse(BaseModel):
     access_token: str
     token_type: str
     user: UserPublic
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=6, max_length=128)
+    new_password: str = Field(min_length=6, max_length=128)
+
+
+class AdminResetPasswordRequest(BaseModel):
+    password: str | None = None
+
+
+class AgentGroupCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    description: str | None = None
+
+
+class AgentGroupUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
+class AgentGroupOut(BaseModel):
+    id: int
+    name: str
+    description: str
+    created_at: datetime
 
 
 class ModuleSummary(BaseModel):
@@ -42,11 +181,32 @@ class AgentSummary(BaseModel):
     last_run: str
     description: str
     url: str
+    groups: list[str] = []
+    editable: bool = True
 
 
 class AgentDetail(AgentSummary):
-    tools: list[str]
-    tags: list[str]
+    pass
+
+
+class AgentUpdate(BaseModel):
+    name: str | None = None
+    url: str | None = None
+    status: str | None = None
+    owner: str | None = None
+    last_run: str | None = None
+    description: str | None = None
+    groups: list[str] | None = None
+
+
+class AgentCreate(BaseModel):
+    name: str
+    url: str
+    status: str = "active"
+    owner: str = "system"
+    last_run: str = ""
+    description: str = ""
+    groups: list[str] = []
 
 
 class ModelSummary(BaseModel):
@@ -68,10 +228,13 @@ class PolicyBase(BaseModel):
     name: str
     effect: str
     actions: list[str]
+    scope: str = "resource"
     resource_type: str
     resource_id: str | None = None
-    subject_attrs: dict
-    resource_attrs: dict
+    subject_type: str | None = None
+    subject_id: str | None = None
+    subject_attrs: dict = Field(default_factory=dict)
+    resource_attrs: dict = Field(default_factory=dict)
     enabled: bool = True
 
 
@@ -108,3 +271,14 @@ class ModelCreate(BaseModel):
     pricing: str
     release: str
     tags: list[str]
+
+
+class ModelUpdate(BaseModel):
+    name: str | None = None
+    provider: str | None = None
+    status: str | None = None
+    context_length: int | None = None
+    description: str | None = None
+    pricing: str | None = None
+    release: str | None = None
+    tags: list[str] | None = None

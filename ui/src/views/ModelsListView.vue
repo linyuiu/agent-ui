@@ -38,7 +38,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { fetchModels, type ModelSummary } from '../api'
+import { fetchModels, type ModelSummary } from '../api/models'
 
 const router = useRouter()
 
