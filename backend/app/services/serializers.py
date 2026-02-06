@@ -11,7 +11,7 @@ def count_active(items: Iterable[object], key: str = "status") -> int:
 
 
 def agent_summary(agent: models.Agent) -> schemas.AgentSummary:
-    editable = True
+    editable = agent.source_type not in {"fit2cloud"}
     groups = list(agent.groups or [])
     if not groups and agent.group_name:
         groups = [agent.group_name]

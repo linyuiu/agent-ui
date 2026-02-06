@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from . import admin, agents, auth, dashboard, demo, models
+from . import admin, agent_groups, agents, auth, dashboard, demo, models
 
 
 def register_routes(app: FastAPI) -> None:
@@ -10,3 +10,4 @@ def register_routes(app: FastAPI) -> None:
     app.include_router(agents.router)
     app.include_router(models.router)
     app.include_router(demo.router)
+    app.include_router(agent_groups.router)
