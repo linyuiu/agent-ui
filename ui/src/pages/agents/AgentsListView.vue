@@ -24,7 +24,12 @@
         </div>
         <div class="field">
           <label>URL</label>
-          <input v-model="agentForm.url" type="text" placeholder="https://example.com/agent" required />
+          <input
+            v-model="agentForm.url"
+            type="text"
+            placeholder="https://example.com/chat/your-token"
+            required
+          />
         </div>
         <div class="field">
           <label>负责人</label>
@@ -128,7 +133,6 @@
               {{ agent.editable ? '可编辑' : '只读' }}
             </span>
           </div>
-          <p>{{ agent.description }}</p>
           <div v-if="agent.groups?.length" class="tag-row">
             <span v-for="group in agent.groups" :key="group" class="chip">分组：{{ group }}</span>
           </div>
@@ -328,7 +332,7 @@ const loadAgents = async () => {
   loading.value = true
   error.value = ''
   try {
-    agents.value = await fetchAgents()
+    agents.value = await fetchAgents({ includeDescription: false })
   } catch (err) {
     error.value = err instanceof Error ? err.message : '加载失败'
   } finally {

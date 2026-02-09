@@ -1,4 +1,4 @@
-from .models import Agent, AgentApiConfig, AgentGroup, Model, PermissionGrant, Policy, Role, User
+from .models import Agent, AgentApiConfig, AgentGroup, Model, PermissionGrant, Policy, Role, User, UserRole
 
 __all__ = [
     "Agent",
@@ -9,4 +9,5 @@ __all__ = [
     "Policy",
     "Role",
     "User",
+    "UserRole",
 ]

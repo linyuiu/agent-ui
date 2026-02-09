@@ -23,6 +23,7 @@ class UserPublic(BaseModel):
     username: str
     email: EmailStr
     role: str
+    roles: list[str] = []
     status: str
     source: str
     workspace: str
@@ -32,7 +33,8 @@ class AdminUserCreate(_PasswordBase):
     account: str = Field(min_length=2, max_length=64)
     username: str = Field(min_length=1, max_length=64)
     email: EmailStr
-    role: str = "user"
+    role: str | None = "user"
+    roles: list[str] | None = None
     status: str = "active"
     source: str = "local"
     workspace: str = "default"
@@ -43,6 +45,7 @@ class AdminUserUpdate(BaseModel):
     username: str | None = None
     email: EmailStr | None = None
     role: str | None = None
+    roles: list[str] | None = None
     status: str | None = None
     source: str | None = None
     workspace: str | None = None
@@ -55,6 +58,7 @@ class AdminUserOut(BaseModel):
     username: str
     email: EmailStr
     role: str
+    roles: list[str] = []
     status: str
     source: str
     workspace: str
@@ -121,6 +125,7 @@ class PermissionSubjectSummary(BaseModel):
     subject_id: str
     scope: str
     role: str | None = None
+    roles: list[str] = []
     read_only: bool = False
     items: list[PermissionSubjectMatrixItem] = []
 

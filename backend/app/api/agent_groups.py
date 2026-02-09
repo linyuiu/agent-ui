@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..auth import get_current_user
 from ..db import get_db
-from ..permissions import has_permission, require_menu_action
+from ..permissions import has_permission, is_super_admin, require_menu_action
 
 router = APIRouter(prefix="/agent-groups", tags=["agent-groups"])
 
@@ -25,7 +25,7 @@ def list_agent_groups(
 ) -> list[schemas.AgentGroupOut]:
     require_menu_action(db, current_user, action="view", menu_id="agents")
     groups = db.query(models.AgentGroup).order_by(models.AgentGroup.name.asc()).all()
-    if current_user.role == "admin":
+    if is_super_admin(current_user):
         return [_to_out(group) for group in groups]
 
     allowed: list[schemas.AgentGroupOut] = []

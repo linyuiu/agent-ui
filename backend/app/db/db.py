@@ -1,16 +1,21 @@
-import os
-
-from .. import config  # noqa: F401
-
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+psycopg://postgres:postgres@localhost:5432/agent_ui",
-)
+from ..config import config
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+
+def _engine_kwargs() -> dict:
+    return {
+        "pool_pre_ping": config.DB_POOL_PRE_PING,
+        "echo": config.DB_ECHO,
+        "pool_size": max(1, config.DB_POOL_SIZE),
+        "max_overflow": max(0, config.DB_MAX_OVERFLOW),
+        "pool_timeout": max(1, config.DB_POOL_TIMEOUT),
+        "pool_recycle": max(30, config.DB_POOL_RECYCLE),
+    }
+
+
+engine = create_engine(config.DATABASE_URL, **_engine_kwargs())
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 Base = declarative_base()

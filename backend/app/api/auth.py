@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas, security
 from ..auth import get_current_user
-from ..permissions import summarize_permissions
+from ..permissions import get_user_role_names, summarize_permissions
 from ..db import get_db
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -35,14 +35,18 @@ def register(payload: schemas.RegisterRequest, db: Session = Depends(get_db)) ->
         role="user",
     )
     db.add(user)
+    db.flush()
+    db.add(models.UserRole(user_id=user.id, role_name="user"))
     db.commit()
     db.refresh(user)
+    roles = get_user_role_names(db, user)
     return schemas.UserPublic(
         id=user.id,
         account=user.account,
         username=user.username,
         email=user.email,
         role=user.role,
+        roles=roles,
         status=user.status,
         source=user.source,
         workspace=user.workspace,
@@ -71,6 +75,7 @@ def login(payload: schemas.LoginRequest, db: Session = Depends(get_db)) -> schem
     token = security.create_access_token(
         {"sub": str(user.id), "email": user.email, "username": user.username, "account": user.account}
     )
+    roles = get_user_role_names(db, user)
     return schemas.LoginResponse(
         access_token=token,
         token_type="bearer",
@@ -80,6 +85,7 @@ def login(payload: schemas.LoginRequest, db: Session = Depends(get_db)) -> schem
             username=user.username,
             email=user.email,
             role=user.role,
+            roles=roles,
             status=user.status,
             source=user.source,
             workspace=user.workspace,
@@ -88,13 +94,18 @@ def login(payload: schemas.LoginRequest, db: Session = Depends(get_db)) -> schem
 
 
 @router.get("/me", response_model=schemas.UserPublic)
-def me(current_user: models.User = Depends(get_current_user)) -> schemas.UserPublic:
+def me(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> schemas.UserPublic:
+    roles = get_user_role_names(db, current_user)
     return schemas.UserPublic(
         id=current_user.id,
         account=current_user.account,
         username=current_user.username,
         email=current_user.email,
         role=current_user.role,
+        roles=roles,
         status=current_user.status,
         source=current_user.source,
         workspace=current_user.workspace,

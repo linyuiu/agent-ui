@@ -38,7 +38,12 @@ export type Fit2CloudSyncResponse = {
   errors: string[]
 }
 
-export const fetchAgents = () => apiGet<AgentSummary[]>('/agents')
+export const fetchAgents = (options?: { includeDescription?: boolean }) => {
+  const includeDescription = options?.includeDescription ?? true
+  return apiGet<AgentSummary[]>(
+    `/agents?include_description=${includeDescription ? 'true' : 'false'}`
+  )
+}
 export const fetchAgent = (id: string) => apiGet<AgentDetail>(`/agents/${id}`)
 
 export const createAgent = (payload: AgentCreate) => apiPost<AgentDetail>('/admin/agents', payload)

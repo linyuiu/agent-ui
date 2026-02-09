@@ -10,7 +10,7 @@ def count_active(items: Iterable[object], key: str = "status") -> int:
     return sum(1 for item in items if getattr(item, key, None) in active_values)
 
 
-def agent_summary(agent: models.Agent) -> schemas.AgentSummary:
+def agent_summary(agent: models.Agent, *, include_description: bool = True) -> schemas.AgentSummary:
     editable = agent.source_type not in {"fit2cloud"}
     groups = list(agent.groups or [])
     if not groups and agent.group_name:
@@ -21,7 +21,7 @@ def agent_summary(agent: models.Agent) -> schemas.AgentSummary:
         status=agent.status,
         owner=agent.owner,
         last_run=agent.last_run,
-        description=agent.description,
+        description=agent.description if include_description else "",
         url=agent.url,
         groups=groups,
         editable=editable,
@@ -29,7 +29,7 @@ def agent_summary(agent: models.Agent) -> schemas.AgentSummary:
 
 
 def agent_detail(agent: models.Agent) -> schemas.AgentDetail:
-    return schemas.AgentDetail(**agent_summary(agent).model_dump())
+    return schemas.AgentDetail(**agent_summary(agent, include_description=True).model_dump())
 
 
 def model_summary(model: models.Model) -> schemas.ModelSummary:

@@ -5,10 +5,15 @@ from sqlalchemy.orm import Session
 
 from .. import models, security
 from ..db import Base, engine
+from ..services.chat_links import build_proxy_chat_url, generate_proxy_id, parse_upstream_chat_url
 
 
 def _column_names(inspector, table: str) -> set[str]:
     return {col["name"] for col in inspector.get_columns(table)}
+
+
+def _column_map(inspector, table: str) -> dict[str, dict]:
+    return {col["name"]: col for col in inspector.get_columns(table)}
 
 
 def ensure_schema() -> None:
@@ -79,6 +84,7 @@ def ensure_schema() -> None:
 
         if "agents" in tables:
             columns = _column_names(inspector, "agents")
+            column_defs = _column_map(inspector, "agents")
             if "group_name" not in columns:
                 conn.execute(text("ALTER TABLE agents ADD COLUMN group_name VARCHAR(255)"))
             conn.execute(
@@ -115,6 +121,44 @@ def ensure_schema() -> None:
                 conn.execute(text("ALTER TABLE agents ADD COLUMN external_id VARCHAR(255)"))
             if "workspace_id" not in columns:
                 conn.execute(text("ALTER TABLE agents ADD COLUMN workspace_id VARCHAR(255)"))
+            if "proxy_id" not in columns:
+                conn.execute(text("ALTER TABLE agents ADD COLUMN proxy_id VARCHAR(64)"))
+            conn.execute(
+                text(
+                    "UPDATE agents "
+                    "SET proxy_id = md5(random()::text || clock_timestamp()::text) "
+                    "WHERE proxy_id IS NULL OR proxy_id = ''"
+                )
+            )
+            conn.execute(text("ALTER TABLE agents ALTER COLUMN proxy_id SET NOT NULL"))
+            conn.execute(
+                text("CREATE UNIQUE INDEX IF NOT EXISTS ix_agents_proxy_id ON agents (proxy_id)")
+            )
+            if "upstream_base_url" not in columns:
+                conn.execute(text("ALTER TABLE agents ADD COLUMN upstream_base_url VARCHAR(255)"))
+            conn.execute(
+                text(
+                    "UPDATE agents "
+                    "SET upstream_base_url = COALESCE(upstream_base_url, '') "
+                    "WHERE upstream_base_url IS NULL"
+                )
+            )
+            conn.execute(text("ALTER TABLE agents ALTER COLUMN upstream_base_url SET NOT NULL"))
+            if "upstream_token" not in columns:
+                conn.execute(text("ALTER TABLE agents ADD COLUMN upstream_token VARCHAR(1024)"))
+            conn.execute(
+                text(
+                    "UPDATE agents "
+                    "SET upstream_token = COALESCE(upstream_token, '') "
+                    "WHERE upstream_token IS NULL"
+                )
+            )
+            conn.execute(text("ALTER TABLE agents ALTER COLUMN upstream_token SET NOT NULL"))
+            if "description" in columns:
+                desc_type = str(column_defs["description"].get("type", "")).lower()
+                # Fit2Cloud `desc/prologue` may exceed 1024 chars; keep full text instead of truncating.
+                if "text" not in desc_type:
+                    conn.execute(text("ALTER TABLE agents ALTER COLUMN description TYPE TEXT"))
 
         if "agent_api_configs" in tables:
             columns = _column_names(inspector, "agent_api_configs")
@@ -130,11 +174,41 @@ def ensure_schema() -> None:
                 )
             )
 
+    _backfill_agent_chat_links()
     _seed_roles()
     _seed_admin_user()
     _seed_admin_permissions()
     _seed_user_permissions()
+    _seed_user_roles()
     _seed_agent_groups()
+
+
+def _backfill_agent_chat_links() -> None:
+    with Session(engine) as session:
+        agents = session.query(models.Agent).all()
+        changed = False
+        for agent in agents:
+            if not agent.proxy_id:
+                agent.proxy_id = generate_proxy_id()
+                changed = True
+
+            if not agent.upstream_base_url or not agent.upstream_token:
+                try:
+                    upstream_base_url, upstream_token = parse_upstream_chat_url(agent.url or "")
+                except ValueError:
+                    continue
+                agent.upstream_base_url = upstream_base_url
+                agent.upstream_token = upstream_token
+                changed = True
+
+            if agent.upstream_base_url and agent.upstream_token:
+                proxy_url = build_proxy_chat_url(agent.proxy_id)
+                if agent.url != proxy_url:
+                    agent.url = proxy_url
+                    changed = True
+
+        if changed:
+            session.commit()
 
 
 def _seed_roles() -> None:
@@ -143,7 +217,6 @@ def _seed_roles() -> None:
         defaults = [
             ("admin", "系统管理员"),
             ("user", "普通用户"),
-            ("ops", "运营角色"),
         ]
         created = False
         for name, desc in defaults:
@@ -159,8 +232,14 @@ def _seed_admin_user() -> None:
     with Session(engine) as session:
         existing = session.query(models.User).filter(models.User.account == "admin").first()
         if existing:
+            changed = False
             if existing.email.endswith(".local"):
                 existing.email = "admin@example.com"
+                changed = True
+            if existing.role != "admin":
+                existing.role = "admin"
+                changed = True
+            if changed:
                 session.commit()
             return
         admin_user = models.User(
@@ -227,9 +306,9 @@ def _seed_user_permissions() -> None:
             return
 
         desired: list[tuple[str, str, str | None, str]] = []
-        for menu_id in ("agents", "models"):
+        for menu_id in ("agents", "models", "admin"):
             desired.append(("menu", "menu", menu_id, "view"))
-        for resource_type in ("agent", "model"):
+        for resource_type in ("agent", "model", "agent_group"):
             desired.append(("resource", resource_type, None, "view"))
 
         existing = {
@@ -258,6 +337,63 @@ def _seed_user_permissions() -> None:
             )
             created = True
         if created:
+            session.commit()
+
+
+def _seed_user_roles() -> None:
+    with Session(engine) as session:
+        all_links = session.query(models.UserRole).all()
+        existing_pairs = {(row.user_id, row.role_name) for row in all_links}
+        links_by_user: dict[int, list[str]] = {}
+        for row in all_links:
+            links_by_user.setdefault(row.user_id, []).append(row.role_name)
+
+        valid_roles = {role.name for role in session.query(models.Role).all()}
+        if "user" not in valid_roles:
+            session.add(models.Role(name="user", description="普通用户"))
+            session.flush()
+            valid_roles.add("user")
+        if "admin" not in valid_roles:
+            session.add(models.Role(name="admin", description="系统管理员"))
+            session.flush()
+            valid_roles.add("admin")
+
+        changed = False
+        users = session.query(models.User).all()
+        for user in users:
+            target_roles: list[str] = []
+            if user.account == "admin":
+                target_roles = ["admin"]
+            else:
+                current = (user.role or "").strip()
+                if current in valid_roles:
+                    target_roles.append(current)
+
+            # include existing role links for this user, keep as union
+            for role_name in links_by_user.get(user.id, []):
+                if role_name in valid_roles and role_name not in target_roles:
+                    target_roles.append(role_name)
+
+            if not target_roles:
+                target_roles = ["user"]
+
+            for role_name in target_roles:
+                pair = (user.id, role_name)
+                if pair in existing_pairs:
+                    continue
+                session.add(models.UserRole(user_id=user.id, role_name=role_name))
+                existing_pairs.add(pair)
+                changed = True
+
+            if user.account == "admin" or "admin" in target_roles:
+                primary_role = "admin"
+            else:
+                primary_role = target_roles[0]
+            if user.role != primary_role:
+                user.role = primary_role
+                changed = True
+
+        if changed:
             session.commit()
 
 

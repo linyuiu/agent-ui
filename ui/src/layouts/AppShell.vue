@@ -17,20 +17,64 @@
           <div v-if="loading" class="sidebar__state">加载模块中...</div>
           <div v-if="error" class="sidebar__state error">{{ error }}</div>
 
-          <div class="sidebar__menu">
-            <button
-              v-for="item in modules"
-              :key="item.id"
-              class="nav-item"
-              :class="{ active: item.id === activeId }"
-              type="button"
-              @click="handleModuleClick(item.id)"
-            >
-              <div>
-                <span>{{ item.title }}</span>
-                <small>{{ item.subtitle }}</small>
+        <div class="sidebar__menu">
+            <template v-for="item in modules" :key="item.id">
+              <div v-if="item.id === 'admin'" class="nav-group" :class="{ open: adminMenuOpen }">
+                <button
+                  class="nav-item nav-group-trigger"
+                  :class="{ active: item.id === activeId }"
+                  type="button"
+                  @click="handleAdminModuleClick"
+                >
+                  <div>
+                    <span>{{ getModuleTitle(item) }}</span>
+                    <small v-if="getModuleSubtitle(item)">{{ getModuleSubtitle(item) }}</small>
+                  </div>
+                  <span class="group-caret" :class="{ open: adminMenuOpen }"></span>
+                </button>
+                <transition name="slide-fade">
+                  <div v-if="adminMenuOpen" class="nav-submenu">
+                    <button
+                      class="nav-sub-item"
+                      :class="{ active: activeAdminSubmodule === 'user-role' }"
+                      type="button"
+                      @click="goToAdminSubmodule('user-role')"
+                    >
+                      用户角色管理
+                    </button>
+                    <button
+                      class="nav-sub-item"
+                      :class="{ active: activeAdminSubmodule === 'permissions' }"
+                      type="button"
+                      @click="goToAdminSubmodule('permissions')"
+                    >
+                      权限管理
+                    </button>
+                    <button
+                      class="nav-sub-item"
+                      :class="{ active: activeAdminSubmodule === 'agent-sync' }"
+                      type="button"
+                      @click="goToAdminSubmodule('agent-sync')"
+                    >
+                      智能体同步
+                    </button>
+                  </div>
+                </transition>
               </div>
-            </button>
+
+              <button
+                v-else
+                class="nav-item"
+                :class="{ active: item.id === activeId }"
+                type="button"
+                @click="handleModuleClick(item.id)"
+              >
+                <div>
+                  <span>{{ getModuleTitle(item) }}</span>
+                  <small v-if="getModuleSubtitle(item)">{{ getModuleSubtitle(item) }}</small>
+                </div>
+              </button>
+            </template>
 
             <div ref="menuRef" class="user-menu bottom">
               <button class="user-trigger" type="button" @click="toggleMenu">
@@ -51,7 +95,7 @@
                   </div>
                 </div>
                 <div class="menu-items">
-                  <button class="menu-item" type="button" @click="goTo('home-admin')">
+                  <button class="menu-item" type="button" @click="goToAdminHome">
                     <span class="icon system"></span>
                     <span>系统管理</span>
                   </button>
@@ -97,7 +141,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { fetchModules, type ModuleSummary } from '../services/dashboard'
 
@@ -109,6 +153,7 @@ const account = ref(localStorage.getItem('user_account') || '')
 const role = ref(localStorage.getItem('user_role') || '')
 const showMenu = ref(false)
 const menuRef = ref<HTMLElement | null>(null)
+const adminMenuOpen = ref(false)
 
 const modules = ref<ModuleSummary[]>([])
 const loading = ref(false)
@@ -118,13 +163,54 @@ const activeId = computed(() => {
   return (route.meta.module as string) || modules.value[0]?.id || 'agents'
 })
 
-const handleModuleClick = async (id: string) => {
-  if (id === 'models') {
-    await router.push({ name: 'home-models' })
+const adminSubmoduleList = ['user-role', 'permissions', 'agent-sync'] as const
+type AdminSubmodule = (typeof adminSubmoduleList)[number]
+
+const normalizeAdminSubmodule = (value: unknown): AdminSubmodule => {
+  const text = String(value || '')
+  if (adminSubmoduleList.includes(text as AdminSubmodule)) {
+    return text as AdminSubmodule
+  }
+  return 'user-role'
+}
+
+const activeAdminSubmodule = computed<AdminSubmodule>(() => normalizeAdminSubmodule(route.query.tab))
+
+const getModuleTitle = (item: ModuleSummary) => {
+  if (item.id === 'agents') return '智能体'
+  if (item.id === 'models') return '模型'
+  if (item.id === 'admin') return '系统管理'
+  return item.title
+}
+
+const getModuleSubtitle = (_item: ModuleSummary) => ''
+
+const handleAdminModuleClick = async () => {
+  if ((route.meta.module as string) !== 'admin') {
+    adminMenuOpen.value = true
+    await router.push({ name: 'home-admin', query: { tab: 'user-role' } })
     return
   }
+
+  adminMenuOpen.value = !adminMenuOpen.value
+  if (adminMenuOpen.value && !route.query.tab) {
+    await router.replace({ name: 'home-admin', query: { tab: 'user-role' } })
+  }
+}
+
+const goToAdminSubmodule = async (tab: AdminSubmodule) => {
+  adminMenuOpen.value = true
+  await router.push({ name: 'home-admin', query: { tab } })
+}
+
+const handleModuleClick = async (id: string) => {
   if (id === 'admin') {
-    await router.push({ name: 'home-admin' })
+    await handleAdminModuleClick()
+    return
+  }
+  adminMenuOpen.value = false
+  if (id === 'models') {
+    await router.push({ name: 'home-models' })
     return
   }
   await router.push({ name: 'home-agents' })
@@ -147,7 +233,16 @@ const toggleMenu = () => {
 
 const goTo = async (name: string) => {
   showMenu.value = false
+  if (name !== 'home-admin') {
+    adminMenuOpen.value = false
+  }
   await router.push({ name })
+}
+
+const goToAdminHome = async () => {
+  showMenu.value = false
+  adminMenuOpen.value = true
+  await router.push({ name: 'home-admin', query: { tab: activeAdminSubmodule.value } })
 }
 
 const loadModules = async () => {
@@ -172,6 +267,11 @@ const loadModules = async () => {
 }
 
 onMounted(loadModules)
+onMounted(() => {
+  if ((route.meta.module as string) === 'admin') {
+    adminMenuOpen.value = true
+  }
+})
 
 const handleClickOutside = (event: MouseEvent) => {
   if (!showMenu.value) return
@@ -188,6 +288,15 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('click', handleClickOutside)
 })
+
+watch(
+  () => route.fullPath,
+  () => {
+    if ((route.meta.module as string) === 'admin') {
+      adminMenuOpen.value = true
+    }
+  }
+)
 </script>
 
 <style scoped>
@@ -322,6 +431,70 @@ h1 {
 .nav-item.active {
   background: rgba(15, 179, 185, 0.16);
   font-weight: 600;
+}
+
+.nav-group {
+  display: grid;
+  gap: 8px;
+}
+
+.nav-group-trigger {
+  width: 100%;
+}
+
+.group-caret {
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid #5c6b71;
+  border-bottom: 2px solid #5c6b71;
+  transform: rotate(45deg);
+  transition: transform 0.2s ease;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.group-caret.open {
+  transform: rotate(-135deg);
+}
+
+.nav-submenu {
+  display: grid;
+  gap: 6px;
+  padding: 0 2px 2px 2px;
+}
+
+.nav-sub-item {
+  text-align: left;
+  border: 1px solid rgba(15, 40, 55, 0.1);
+  background: rgba(255, 255, 255, 0.85);
+  padding: 8px 10px;
+  border-radius: 12px;
+  cursor: pointer;
+  color: #304045;
+  font-size: 13px;
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+
+.nav-sub-item:hover {
+  background: rgba(15, 179, 185, 0.08);
+  transform: translateY(-1px);
+}
+
+.nav-sub-item.active {
+  background: rgba(15, 179, 185, 0.16);
+  border-color: rgba(15, 179, 185, 0.35);
+  font-weight: 600;
+}
+
+.slide-fade-enter-active,
+.slide-fade-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.slide-fade-enter-from,
+.slide-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
 }
 
 

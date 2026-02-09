@@ -1,4 +1,6 @@
-from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, String, UniqueConstraint, func
+from uuid import uuid4
+
+from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, String, Text, UniqueConstraint, func
 
 from ..db import Base
 
@@ -25,6 +27,18 @@ class Role(Base):
     name = Column(String(50), unique=True, nullable=False, index=True)
     description = Column(String(255), nullable=False, default="")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class UserRole(Base):
+    __tablename__ = "user_roles"
+
+    user_id = Column(Integer, primary_key=True, nullable=False, index=True)
+    role_name = Column(String(50), primary_key=True, nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "role_name", name="uq_user_role"),
+    )
 
 
 class PermissionGrant(Base):
@@ -78,8 +92,11 @@ class Agent(Base):
     status = Column(String(50), nullable=False, default="active")
     owner = Column(String(255), nullable=False, default="system")
     last_run = Column(String(50), nullable=False, default="")
+    proxy_id = Column(String(64), unique=True, nullable=False, index=True, default=lambda: uuid4().hex)
+    upstream_base_url = Column(String(255), nullable=False, default="")
+    upstream_token = Column(String(1024), nullable=False, default="")
     url = Column(String(1024), nullable=False)
-    description = Column(String(1024), nullable=False, default="")
+    description = Column(Text, nullable=False, default="")
     group_name = Column(String(255), nullable=False, default="")
     groups = Column(JSON, nullable=False, default=list)
     tools = Column(JSON, nullable=False, default=list)
