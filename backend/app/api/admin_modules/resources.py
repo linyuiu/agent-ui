@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import httpx
@@ -27,6 +28,16 @@ from .common import (
 router = APIRouter()
 
 
+def _normalize_manual_agent_url(raw_url: str) -> str:
+    candidate = (raw_url or "").strip()
+    if not candidate:
+        raise HTTPException(status_code=400, detail="Agent URL is required")
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="Agent URL must be an absolute http(s) URL")
+    return candidate
+
+
 @router.post("/models", response_model=schemas.ModelDetail, status_code=201)
 def create_model(
     payload: schemas.ModelCreate,
@@ -34,21 +45,44 @@ def create_model(
     db: Session = Depends(get_db),
 ) -> schemas.ModelDetail:
     require_menu_edit(current_user, db, "models")
+    model_id = (payload.id or "").strip() or f"model-{uuid4().hex[:12]}"
     if not has_permission(
         db,
         current_user,
         action="edit",
         scope="resource",
         resource_type="model",
-        resource_id=payload.id,
+        resource_id=model_id,
+    ) and not has_permission(
+        db,
+        current_user,
+        action="edit",
+        scope="resource",
+        resource_type="model",
+        resource_id=None,
     ):
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    existing = db.query(models.Model).filter(models.Model.id == payload.id).first()
+    existing = db.query(models.Model).filter(models.Model.id == model_id).first()
     if existing:
         raise HTTPException(status_code=409, detail="Model already exists")
 
-    model = models.Model(**payload.model_dump())
+    model = models.Model(
+        id=model_id,
+        name=payload.name,
+        provider=payload.provider,
+        model_type=payload.model_type,
+        base_model=payload.base_model,
+        api_url=payload.api_url,
+        api_key=payload.api_key,
+        parameters=[item.model_dump() for item in payload.parameters],
+        status=payload.status,
+        context_length=payload.context_length,
+        description=payload.description,
+        pricing=payload.pricing,
+        release=payload.release,
+        tags=payload.tags,
+    )
     db.add(model)
     db.commit()
     db.refresh(model)
@@ -81,6 +115,22 @@ def update_model(
         model.name = payload.name
     if payload.provider is not None:
         model.provider = payload.provider
+    if payload.model_type is not None:
+        model.model_type = payload.model_type
+    if payload.base_model is not None:
+        model.base_model = payload.base_model
+    if payload.api_url is not None:
+        normalized_url = payload.api_url.strip()
+        if not normalized_url:
+            raise HTTPException(status_code=400, detail="api_url cannot be empty")
+        model.api_url = normalized_url
+    if payload.api_key is not None:
+        normalized_key = payload.api_key.strip()
+        if not normalized_key:
+            raise HTTPException(status_code=400, detail="api_key cannot be empty")
+        model.api_key = normalized_key
+    if payload.parameters is not None:
+        model.parameters = [item.model_dump() for item in payload.parameters]
     if payload.status is not None:
         model.status = payload.status
     if payload.context_length is not None:
@@ -99,6 +149,45 @@ def update_model(
     return model_detail(model)
 
 
+@router.delete("/models/{model_id}")
+def delete_model(
+    model_id: str,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    require_menu_edit(current_user, db, "models")
+    if not has_permission(
+        db,
+        current_user,
+        action="manage",
+        scope="resource",
+        resource_type="model",
+        resource_id=model_id,
+    ) and not has_permission(
+        db,
+        current_user,
+        action="manage",
+        scope="resource",
+        resource_type="model",
+        resource_id=None,
+    ):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    model = db.query(models.Model).filter(models.Model.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="Model not found")
+
+    db.query(models.PermissionGrant).filter(
+        models.PermissionGrant.scope == "resource",
+        models.PermissionGrant.resource_type == "model",
+        models.PermissionGrant.resource_id == model_id,
+    ).delete(synchronize_session=False)
+
+    db.delete(model)
+    db.commit()
+    return {"status": "deleted"}
+
+
 @router.post("/agents", response_model=schemas.AgentDetail, status_code=201)
 def create_agent(
     payload: schemas.AgentCreate,
@@ -106,7 +195,7 @@ def create_agent(
     db: Session = Depends(get_db),
 ) -> schemas.AgentDetail:
     require_menu_edit(current_user, db, "agents")
-    upstream_base_url, upstream_token = parse_agent_chat_link(payload.url)
+    manual_url = _normalize_manual_agent_url(payload.url)
     groups = normalize_groups(payload.groups)
     if groups:
         ensure_agent_groups(db, current_user, groups)
@@ -124,8 +213,8 @@ def create_agent(
     existing = (
         db.query(models.Agent)
         .filter(
-            models.Agent.upstream_base_url == upstream_base_url,
-            models.Agent.upstream_token == upstream_token,
+            models.Agent.is_synced.is_(False),
+            models.Agent.url == manual_url,
         )
         .first()
     )
@@ -139,18 +228,14 @@ def create_agent(
         owner=payload.owner,
         last_run=payload.last_run,
         proxy_id=new_proxy_id(),
-        upstream_base_url=upstream_base_url,
-        upstream_token=upstream_token,
-        url="",
+        upstream_base_url="",
+        upstream_token="",
+        url=manual_url,
         description=payload.description,
         group_name=groups[0] if groups else "",
         groups=groups,
         source_payload={},
-    )
-    set_agent_upstream_chat_link(
-        agent,
-        upstream_base_url=upstream_base_url,
-        upstream_token=upstream_token,
+        is_synced=False,
     )
     db.add(agent)
     db.commit()
@@ -169,6 +254,24 @@ def update_agent(
     agent = db.query(models.Agent).filter(models.Agent.id == agent_id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
+    is_synced_agent = bool(agent.is_synced)
+
+    if is_synced_agent:
+        if any(
+            value is not None
+            for value in (
+                payload.name,
+                payload.url,
+                payload.owner,
+                payload.last_run,
+                payload.description,
+                payload.groups,
+            )
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Synced agents only allow status updates",
+            )
 
     groups = list(agent.groups or [])
     if not groups and agent.group_name:
@@ -197,24 +300,22 @@ def update_agent(
     ):
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    if payload.url and payload.url != agent.url:
-        upstream_base_url, upstream_token = parse_agent_chat_link(payload.url)
+    if payload.url is not None and payload.url != agent.url:
+        manual_url = _normalize_manual_agent_url(payload.url)
         existing = (
             db.query(models.Agent)
             .filter(
                 models.Agent.id != agent_id,
-                models.Agent.upstream_base_url == upstream_base_url,
-                models.Agent.upstream_token == upstream_token,
+                models.Agent.is_synced.is_(False),
+                models.Agent.url == manual_url,
             )
             .first()
         )
         if existing:
             raise HTTPException(status_code=409, detail="Agent url already exists")
-        set_agent_upstream_chat_link(
-            agent,
-            upstream_base_url=upstream_base_url,
-            upstream_token=upstream_token,
-        )
+        agent.url = manual_url
+        agent.upstream_base_url = ""
+        agent.upstream_token = ""
 
     if payload.name is not None:
         agent.name = payload.name
@@ -383,6 +484,8 @@ def import_agents(
                 group_name=groups[0] if groups else "",
                 groups=groups,
                 source_payload=source_payload,
+                source_type="api_sync",
+                is_synced=True,
             )
             set_agent_upstream_chat_link(
                 agent,
@@ -399,6 +502,9 @@ def import_agents(
             agent.group_name = groups[0] if groups else ""
             agent.groups = groups
             agent.source_payload = source_payload
+            if not agent.source_type:
+                agent.source_type = "api_sync"
+            agent.is_synced = True
             set_agent_upstream_chat_link(
                 agent,
                 upstream_base_url=upstream_base_url,
@@ -432,7 +538,7 @@ def sync_fit2cloud_agents(
     updated = 0
 
     try:
-        workspace_resp = _fetch_json("/admin/api/system/workspace")
+        workspace_resp = _fetch_json("/admin/api/workspace")
     except Exception as exc:
         raise HTTPException(status_code=400, detail="Failed to fetch workspaces") from exc
 

@@ -454,6 +454,7 @@ def sync_fit2cloud_workspace_agents(
     existing_agents = (
         db.query(models.Agent)
         .filter(
+            models.Agent.is_synced.is_(True),
             models.Agent.source_type == "fit2cloud",
             models.Agent.workspace_id == workspace_key,
             models.Agent.external_id.in_(app_ids),
@@ -509,6 +510,7 @@ def sync_fit2cloud_workspace_agents(
                 groups=groups,
                 source_payload=source_payload,
                 source_type="fit2cloud",
+                is_synced=True,
                 external_id=app_id,
                 workspace_id=workspace_key,
             )
@@ -530,6 +532,7 @@ def sync_fit2cloud_workspace_agents(
         existing.groups = groups
         existing.source_payload = source_payload
         existing.source_type = "fit2cloud"
+        existing.is_synced = True
         existing.external_id = app_id
         existing.workspace_id = workspace_key
         set_agent_upstream_chat_link(

@@ -132,7 +132,7 @@ def list_fit2cloud_workspaces(
     config = get_agent_api_config(db, config_id)
     base_url = config.base_url.rstrip("/")
     try:
-        workspace_resp = fit2cloud_fetch(base_url, config.token, "/admin/api/system/workspace")
+        workspace_resp = fit2cloud_fetch(base_url, config.token, "/admin/api/workspace")
     except Exception as exc:
         raise HTTPException(status_code=400, detail="Failed to fetch workspaces") from exc
     workspaces = workspace_resp.get("data") or []
@@ -195,51 +195,97 @@ def sync_fit2cloud_agents_by_config(
     require_menu_manage(current_user, db)
     config = get_agent_api_config(db, config_id)
     base_url = config.base_url.rstrip("/")
-    workspace_id = payload.workspace_id
-
-    try:
-        apps_resp = fit2cloud_fetch(base_url, config.token, f"/admin/api/workspace/{workspace_id}/application")
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail="Failed to fetch applications") from exc
-
-    apps = apps_resp.get("data") or []
-    if not isinstance(apps, list):
-        raise HTTPException(status_code=400, detail="Unexpected application response format")
-
-    selected_ids = set(payload.application_ids or [])
-    if not payload.sync_all and not selected_ids:
-        raise HTTPException(status_code=400, detail="No applications selected")
-
-    if payload.sync_all:
-        target_apps = [item for item in apps if isinstance(item, dict)]
-    else:
-        target_apps = [
-            item for item in apps if isinstance(item, dict) and item.get("id") in selected_ids
+    normalized_workspaces: list[schemas.Fit2CloudWorkspaceSyncItem] = []
+    if payload.workspaces:
+        normalized_workspaces = payload.workspaces
+    elif payload.workspace_id:
+        normalized_workspaces = [
+            schemas.Fit2CloudWorkspaceSyncItem(
+                workspace_id=payload.workspace_id,
+                workspace_name=payload.workspace_name,
+                application_ids=payload.application_ids,
+                sync_all=payload.sync_all,
+            )
         ]
 
-    workspace_name = payload.workspace_name
-    if not workspace_name:
-        try:
-            workspace_resp = fit2cloud_fetch(base_url, config.token, "/admin/api/system/workspace")
-            workspaces = workspace_resp.get("data") or []
-            for item in workspaces:
-                if isinstance(item, dict) and item.get("id") == workspace_id:
-                    workspace_name = item.get("name") or workspace_id
-                    break
-        except Exception:
-            workspace_name = workspace_id
-    workspace_name = workspace_name or workspace_id
+    if not normalized_workspaces:
+        raise HTTPException(status_code=400, detail="No workspaces selected")
 
-    imported, updated, errors = sync_fit2cloud_workspace_agents(
-        db,
-        current_user,
-        base_url=base_url,
-        token=config.token,
-        workspace_id=workspace_id,
-        workspace_name=workspace_name,
-        apps=target_apps,
-    )
+    workspace_name_map: dict[str, str] = {}
+    try:
+        workspace_resp = fit2cloud_fetch(base_url, config.token, "/admin/api/workspace")
+        workspaces = workspace_resp.get("data") or []
+        if isinstance(workspaces, list):
+            for item in workspaces:
+                if not isinstance(item, dict):
+                    continue
+                workspace_id = str(item.get("id") or "")
+                if not workspace_id:
+                    continue
+                workspace_name_map[workspace_id] = str(item.get("name") or workspace_id)
+    except Exception:
+        workspace_name_map = {}
+
+    imported_total = 0
+    updated_total = 0
+    all_errors: list[str] = []
+
+    for workspace_item in normalized_workspaces:
+        workspace_id = workspace_item.workspace_id
+        try:
+            apps_resp = fit2cloud_fetch(
+                base_url,
+                config.token,
+                f"/admin/api/workspace/{workspace_id}/application",
+            )
+        except Exception:
+            all_errors.append(f"workspace {workspace_id}: failed to fetch applications")
+            continue
+
+        apps = apps_resp.get("data") or []
+        if not isinstance(apps, list):
+            all_errors.append(f"workspace {workspace_id}: unexpected application response format")
+            continue
+
+        selected_ids = set(workspace_item.application_ids or [])
+        if workspace_item.sync_all:
+            target_apps = [item for item in apps if isinstance(item, dict)]
+        else:
+            if not selected_ids:
+                all_errors.append(f"workspace {workspace_id}: no applications selected")
+                continue
+            target_apps = [
+                item for item in apps if isinstance(item, dict) and str(item.get("id")) in selected_ids
+            ]
+
+        if not target_apps:
+            all_errors.append(f"workspace {workspace_id}: no applications to sync")
+            continue
+
+        workspace_name = (
+            workspace_item.workspace_name
+            or workspace_name_map.get(str(workspace_id))
+            or str(workspace_id)
+        )
+
+        imported, updated, errors = sync_fit2cloud_workspace_agents(
+            db,
+            current_user,
+            base_url=base_url,
+            token=config.token,
+            workspace_id=str(workspace_id),
+            workspace_name=str(workspace_name),
+            apps=target_apps,
+        )
+        imported_total += imported
+        updated_total += updated
+        all_errors.extend(errors)
 
     db.commit()
-    total = imported + updated
-    return schemas.AgentSyncResponse(imported=imported, updated=updated, total=total, errors=errors)
+    total = imported_total + updated_total
+    return schemas.AgentSyncResponse(
+        imported=imported_total,
+        updated=updated_total,
+        total=total,
+        errors=all_errors,
+    )

@@ -156,6 +156,12 @@ def _build_upstream_paths(agent: models.Agent, rest: str) -> list[str]:
     return [f"/chat/{rest}", f"/chat/{agent.upstream_token}/{rest}"]
 
 
+def _is_chat_available(agent: models.Agent) -> bool:
+    if not bool(getattr(agent, "is_synced", False)):
+        return True
+    return (agent.status or "").strip().lower() == "active"
+
+
 def _resolve_proxy_target(
     db: Session, request: Request, request_path: str
 ) -> tuple[models.Agent, list[str]]:
@@ -316,6 +322,8 @@ async def proxy_chat(
     agent, upstream_paths = _resolve_proxy_target(db, request, request_path)
     if not agent:
         raise HTTPException(status_code=404, detail="Chat endpoint not found")
+    if not _is_chat_available(agent):
+        raise HTTPException(status_code=403, detail="Agent is unavailable")
     if not agent.upstream_base_url or not agent.upstream_token:
         raise HTTPException(status_code=404, detail="Chat upstream is not configured")
 

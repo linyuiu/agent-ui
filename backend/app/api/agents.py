@@ -35,6 +35,7 @@ def list_agents(
                 models.Agent.group_name,
                 models.Agent.groups,
                 models.Agent.source_type,
+                models.Agent.is_synced,
             )
     )
     agents = query.all()

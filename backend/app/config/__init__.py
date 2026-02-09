@@ -1,3 +1,4 @@
-from .config import _load_env
+from . import settings
+from .settings import *  # noqa: F401,F403
 
-__all__ = ["_load_env"]
+__all__ = ["settings", "_load_env"]

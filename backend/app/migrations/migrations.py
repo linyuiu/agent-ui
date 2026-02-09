@@ -5,7 +5,11 @@ from sqlalchemy.orm import Session
 
 from .. import models, security
 from ..db import Base, engine
-from ..services.chat_links import build_proxy_chat_url, generate_proxy_id, parse_upstream_chat_url
+from ..services.chat_links import (
+    build_proxy_chat_url,
+    generate_proxy_id,
+    parse_upstream_chat_url,
+)
 
 
 def _column_names(inspector, table: str) -> set[str]:
@@ -117,6 +121,17 @@ def ensure_schema() -> None:
                 )
             )
             conn.execute(text("ALTER TABLE agents ALTER COLUMN source_type SET NOT NULL"))
+            if "is_synced" not in columns:
+                conn.execute(text("ALTER TABLE agents ADD COLUMN is_synced BOOLEAN"))
+            conn.execute(
+                text(
+                    "UPDATE agents "
+                    "SET is_synced = (source_type IS NOT NULL AND source_type <> '') "
+                    "WHERE is_synced IS NULL"
+                )
+            )
+            conn.execute(text("ALTER TABLE agents ALTER COLUMN is_synced SET NOT NULL"))
+            conn.execute(text("ALTER TABLE agents ALTER COLUMN is_synced SET DEFAULT FALSE"))
             if "external_id" not in columns:
                 conn.execute(text("ALTER TABLE agents ADD COLUMN external_id VARCHAR(255)"))
             if "workspace_id" not in columns:
@@ -174,6 +189,57 @@ def ensure_schema() -> None:
                 )
             )
 
+        if "models" in tables:
+            columns = _column_names(inspector, "models")
+            if "model_type" not in columns:
+                conn.execute(text("ALTER TABLE models ADD COLUMN model_type VARCHAR(50)"))
+            conn.execute(
+                text(
+                    "UPDATE models "
+                    "SET model_type = COALESCE(NULLIF(model_type, ''), 'llm') "
+                    "WHERE model_type IS NULL OR model_type = ''"
+                )
+            )
+            conn.execute(text("ALTER TABLE models ALTER COLUMN model_type SET NOT NULL"))
+
+            if "base_model" not in columns:
+                conn.execute(text("ALTER TABLE models ADD COLUMN base_model VARCHAR(255)"))
+            conn.execute(
+                text(
+                    "UPDATE models "
+                    "SET base_model = COALESCE(base_model, '') "
+                    "WHERE base_model IS NULL"
+                )
+            )
+            conn.execute(text("ALTER TABLE models ALTER COLUMN base_model SET NOT NULL"))
+
+            if "api_url" not in columns:
+                conn.execute(text("ALTER TABLE models ADD COLUMN api_url VARCHAR(1024)"))
+            conn.execute(
+                text(
+                    "UPDATE models "
+                    "SET api_url = COALESCE(api_url, '') "
+                    "WHERE api_url IS NULL"
+                )
+            )
+            conn.execute(text("ALTER TABLE models ALTER COLUMN api_url SET NOT NULL"))
+
+            if "api_key" not in columns:
+                conn.execute(text("ALTER TABLE models ADD COLUMN api_key VARCHAR(1024)"))
+            conn.execute(
+                text(
+                    "UPDATE models "
+                    "SET api_key = COALESCE(api_key, '') "
+                    "WHERE api_key IS NULL"
+                )
+            )
+            conn.execute(text("ALTER TABLE models ALTER COLUMN api_key SET NOT NULL"))
+
+            if "parameters" not in columns:
+                conn.execute(text("ALTER TABLE models ADD COLUMN parameters JSON"))
+            conn.execute(text("UPDATE models SET parameters = '[]'::json WHERE parameters IS NULL"))
+            conn.execute(text("ALTER TABLE models ALTER COLUMN parameters SET NOT NULL"))
+
     _backfill_agent_chat_links()
     _seed_roles()
     _seed_admin_user()
@@ -188,6 +254,9 @@ def _backfill_agent_chat_links() -> None:
         agents = session.query(models.Agent).all()
         changed = False
         for agent in agents:
+            # Only synced agents should be accessed through backend proxy links.
+            if not bool(agent.is_synced):
+                continue
             if not agent.proxy_id:
                 agent.proxy_id = generate_proxy_id()
                 changed = True

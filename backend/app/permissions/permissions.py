@@ -7,30 +7,20 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..models import PermissionGrant, User, UserRole
+from .engine import (
+    ACTION_BITS,
+    ACTION_ORDER,
+    PermissionAccess,
+    PermissionDecision,
+    PermissionRequest,
+    access_allows as engine_access_allows,
+    build_access_map as engine_build_access_map,
+    get_permission_engine,
+)
 
 MENU_IDS = {"agents", "models", "admin"}
 RESOURCE_TYPES = {"agent", "model", "agent_group"}
 SUPER_ADMIN_ACCOUNT = "admin"
-
-ACTION_ORDER = {
-    "view": 1,
-    "edit": 2,
-    "manage": 3,
-}
-
-_ACTION_BITS = {
-    "view": 1,
-    "edit": 2,
-    "manage": 4,
-}
-_IMPLIED_ACTION_MASK = {
-    "view": 1,   # view
-    "edit": 3,   # view + edit
-    "manage": 7,  # view + edit + manage
-}
-
-PermissionAccess = dict[tuple[str, str, str | None], int]
-
 
 def is_super_admin(user: User) -> bool:
     return (user.account or "").strip() == SUPER_ADMIN_ACCOUNT
@@ -73,34 +63,19 @@ def has_role(db: Session, user: User, role_name: str) -> bool:
     return role_name in set(get_user_role_names(db, user))
 
 
-def _resource_match_key(
-    scope: str,
-    resource_type: str,
-    resource_id: str | None,
-) -> tuple[tuple[str, str, str | None], tuple[str, str, str | None]]:
-    return (scope, resource_type, resource_id), (scope, resource_type, None)
-
-
 def _mask_to_actions(mask: int) -> list[str]:
     actions: list[str] = []
-    if mask & _ACTION_BITS["view"]:
+    if mask & ACTION_BITS["view"]:
         actions.append("view")
-    if mask & _ACTION_BITS["edit"]:
+    if mask & ACTION_BITS["edit"]:
         actions.append("edit")
-    if mask & _ACTION_BITS["manage"]:
+    if mask & ACTION_BITS["manage"]:
         actions.append("manage")
     return actions
 
 
 def _build_access_map(grants: Iterable[PermissionGrant]) -> PermissionAccess:
-    access: PermissionAccess = {}
-    for grant in grants:
-        action = str(grant.action or "").strip()
-        if action not in _IMPLIED_ACTION_MASK:
-            continue
-        key = (grant.scope, grant.resource_type, grant.resource_id)
-        access[key] = access.get(key, 0) | _IMPLIED_ACTION_MASK[action]
-    return access
+    return engine_build_access_map(grants)
 
 
 def _access_allows(
@@ -111,13 +86,13 @@ def _access_allows(
     resource_type: str,
     resource_id: str | None,
 ) -> bool:
-    required_bit = _ACTION_BITS.get(action)
-    if required_bit is None:
-        return False
-
-    specific_key, wildcard_key = _resource_match_key(scope, resource_type, resource_id)
-    mask = access.get(specific_key, 0) | access.get(wildcard_key, 0)
-    return bool(mask & required_bit)
+    request = PermissionRequest(
+        action=action,
+        scope=scope,
+        resource_type=resource_type,
+        resource_id=resource_id,
+    )
+    return engine_access_allows(access, request).allowed
 
 
 def _matches_resource(
@@ -261,6 +236,36 @@ def get_user_access(db: Session, user: User) -> PermissionAccess:
     return access
 
 
+def evaluate_permission(
+    db: Session,
+    user: User,
+    *,
+    action: str,
+    scope: str,
+    resource_type: str,
+    resource_id: str | None = None,
+    resource_attrs: dict | None = None,
+    subject_attrs: dict | None = None,
+) -> PermissionDecision:
+    request = PermissionRequest(
+        action=action,
+        scope=scope,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        subject_id=str(user.id),
+        subject_roles=tuple(get_user_role_names(db, user)),
+        subject_attrs=subject_attrs or {},
+        resource_attrs=resource_attrs or {},
+    )
+    engine = get_permission_engine()
+    return engine.evaluate(
+        request=request,
+        grants=get_user_grants(db, user),
+        access=get_user_access(db, user),
+        super_admin=is_super_admin(user),
+    )
+
+
 def has_permission(
     db: Session,
     user: User,
@@ -270,17 +275,15 @@ def has_permission(
     resource_type: str,
     resource_id: str | None = None,
 ) -> bool:
-    if is_super_admin(user):
-        return True
-
-    access = get_user_access(db, user)
-    return _access_allows(
-        access,
+    decision = evaluate_permission(
+        db,
+        user,
         action=action,
         scope=scope,
         resource_type=resource_type,
         resource_id=resource_id,
     )
+    return decision.allowed
 
 
 def require_permission(
@@ -292,14 +295,15 @@ def require_permission(
     resource_type: str,
     resource_id: str | None = None,
 ) -> None:
-    if not has_permission(
+    decision = evaluate_permission(
         db,
         user,
         action=action,
         scope=scope,
         resource_type=resource_type,
         resource_id=resource_id,
-    ):
+    )
+    if not decision.allowed:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Forbidden",
