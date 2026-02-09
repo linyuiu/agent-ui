@@ -29,9 +29,4 @@ const currentSystemAdminTab = computed<SystemAdminTab>(() =>
 )
 </script>
 
-<style scoped>
-.admin-view {
-  display: grid;
-  gap: 28px;
-}
-</style>
+<style scoped src="./AdminView.css"></style>

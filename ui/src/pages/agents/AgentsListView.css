@@ -1,0 +1,49 @@
+@import '../../styles/pages/list-view.css';
+@import '../../styles/pages/agent-form-controls.css';
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.form {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(160px, 1fr)) 160px;
+  gap: 12px;
+  align-items: end;
+}
+
+.button-row {
+  align-self: end;
+  justify-self: start;
+  min-width: 0;
+}
+
+.action-row {
+  align-self: end;
+  display: flex;
+  align-items: center;
+  height: 40px;
+}
+
+@media (max-width: 1400px) {
+  .form {
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  }
+}
+
+.tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.chip {
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: rgba(255, 127, 80, 0.16);
+  color: #b24724;
+}

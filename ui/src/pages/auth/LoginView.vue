@@ -112,6 +112,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { persistAuthSession } from '../../utils/auth-storage'
 
 const router = useRouter()
 
@@ -148,21 +149,10 @@ const handleSubmit = async () => {
     }
 
     const token = payload?.access_token
-    if (token) {
-      localStorage.setItem('access_token', token)
-    }
-    if (payload?.user?.email) {
-      localStorage.setItem('user_email', payload.user.email)
-    }
-    if (payload?.user?.username) {
-      localStorage.setItem('user_name', payload.user.username)
-    }
-    if (payload?.user?.account) {
-      localStorage.setItem('user_account', payload.user.account)
-    }
-    if (payload?.user?.role) {
-      localStorage.setItem('user_role', payload.user.role)
-    }
+    persistAuthSession({
+      token,
+      user: payload?.user,
+    })
 
     if (token) {
       try {
@@ -173,7 +163,7 @@ const handleSubmit = async () => {
         })
         if (permResponse.ok) {
           const permPayload = await permResponse.json()
-          localStorage.setItem('user_permissions', JSON.stringify(permPayload))
+          persistAuthSession({ permissions: permPayload })
         }
       } catch {
         // ignore permission fetch failures on login
@@ -189,214 +179,4 @@ const handleSubmit = async () => {
 }
 </script>
 
-<style scoped>
-.page {
-  position: relative;
-  min-height: 100vh;
-  display: grid;
-  place-items: center;
-  padding: 48px 20px;
-  overflow: hidden;
-}
-
-.orb {
-  position: absolute;
-  border-radius: 999px;
-  filter: blur(2px);
-  opacity: 0.6;
-  animation: float 12s ease-in-out infinite;
-}
-
-.orb-1 {
-  width: 260px;
-  height: 260px;
-  background: radial-gradient(circle at 30% 30%, #ffb86b, #ff7f50);
-  top: -60px;
-  left: -40px;
-}
-
-.orb-2 {
-  width: 220px;
-  height: 220px;
-  background: radial-gradient(circle at 30% 30%, #5ce1e6, #0fb3b9);
-  bottom: -40px;
-  right: -30px;
-  animation-delay: -3s;
-}
-
-.orb-3 {
-  width: 140px;
-  height: 140px;
-  background: radial-gradient(circle at 30% 30%, #ffd29f, #ff9b6a);
-  top: 40%;
-  right: 10%;
-  animation-delay: -6s;
-}
-
-.card {
-  position: relative;
-  z-index: 1;
-  width: min(420px, 92vw);
-  background: rgba(255, 255, 255, 0.8);
-  border: 1px solid rgba(255, 255, 255, 0.6);
-  border-radius: 28px;
-  box-shadow: 0 20px 60px rgba(15, 40, 55, 0.18);
-  padding: 36px 34px 30px;
-  backdrop-filter: blur(12px);
-  animation: rise 0.8s ease both;
-}
-
-.card__header h1 {
-  font-family: 'Space Grotesk', sans-serif;
-  font-size: 30px;
-  margin: 8px 0 6px;
-}
-
-.eyebrow {
-  font-size: 12px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  margin: 0;
-  color: #5a6b70;
-}
-
-.subtitle {
-  margin: 0 0 24px;
-  color: #506067;
-  font-size: 14px;
-}
-
-.form {
-  display: grid;
-  gap: 16px;
-}
-
-.field {
-  display: grid;
-  gap: 8px;
-  font-size: 14px;
-  color: #2b3b40;
-}
-
-.field input {
-  border-radius: 14px;
-  border: 1px solid #d6e0e2;
-  padding: 12px 14px;
-  font-size: 15px;
-  background: #fff;
-  transition: border 0.2s ease, box-shadow 0.2s ease;
-}
-
-.input-wrap {
-  position: relative;
-  display: flex;
-  align-items: center;
-}
-
-.input-wrap input {
-  width: 100%;
-  padding-right: 68px;
-}
-
-.toggle {
-  position: absolute;
-  right: 10px;
-  border: none;
-  background: rgba(15, 179, 185, 0.08);
-  color: #0a7e84;
-  padding: 6px;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: background 0.2s ease, transform 0.2s ease;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.toggle:hover {
-  background: rgba(15, 179, 185, 0.16);
-  transform: translateY(-1px);
-}
-
-.toggle:focus {
-  outline: none;
-  box-shadow: 0 0 0 3px rgba(15, 179, 185, 0.2);
-}
-
-.eye-icon {
-  width: 18px;
-  height: 18px;
-}
-
-.field input:focus {
-  outline: none;
-  border-color: #0fb3b9;
-  box-shadow: 0 0 0 3px rgba(15, 179, 185, 0.15);
-}
-
-.submit {
-  margin-top: 8px;
-  border: none;
-  border-radius: 14px;
-  padding: 12px 16px;
-  font-size: 16px;
-  font-weight: 600;
-  color: #fff;
-  background: linear-gradient(120deg, #ff7f50, #ff9b6a);
-  cursor: pointer;
-  transition: transform 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
-  box-shadow: 0 12px 30px rgba(255, 127, 80, 0.35);
-}
-
-.submit:hover {
-  transform: translateY(-1px);
-}
-
-.submit:disabled {
-  cursor: not-allowed;
-  opacity: 0.7;
-  transform: none;
-  box-shadow: none;
-}
-
-.notice {
-  margin-top: 16px;
-  font-size: 14px;
-  padding: 10px 12px;
-  border-radius: 12px;
-}
-
-.notice--error {
-  background: rgba(255, 94, 94, 0.12);
-  color: #b13333;
-}
-
-.hint {
-  margin-top: 18px;
-  font-size: 12px;
-  color: #6c7b80;
-  display: grid;
-  gap: 4px;
-}
-
-@keyframes float {
-  0%,
-  100% {
-    transform: translateY(0px);
-  }
-  50% {
-    transform: translateY(18px);
-  }
-}
-
-@keyframes rise {
-  from {
-    opacity: 0;
-    transform: translateY(16px) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-</style>
+<style scoped src="./LoginView.css"></style>

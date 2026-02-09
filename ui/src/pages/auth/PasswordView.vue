@@ -37,6 +37,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { changePassword } from '../../services/auth'
+import { clearAuthStorage } from '../../utils/auth-storage'
 
 const router = useRouter()
 
@@ -61,12 +62,7 @@ const handleSubmit = async () => {
       new_password: newPassword.value,
     })
     success.value = '密码已更新，请重新登录。'
-    localStorage.removeItem('access_token')
-    localStorage.removeItem('user_email')
-    localStorage.removeItem('user_role')
-    localStorage.removeItem('user_name')
-    localStorage.removeItem('user_account')
-    localStorage.removeItem('user_permissions')
+    clearAuthStorage()
     await router.push({ name: 'login' })
   } catch (err) {
     error.value = err instanceof Error ? err.message : '保存失败'
@@ -75,89 +71,3 @@ const handleSubmit = async () => {
   }
 }
 </script>
-
-<style scoped>
-.info-view {
-  display: grid;
-  gap: 16px;
-}
-
-.panel {
-  background: rgba(255, 255, 255, 0.9);
-  border-radius: 18px;
-  padding: 24px;
-  border: 1px solid rgba(15, 40, 55, 0.06);
-}
-
-.panel-header h2 {
-  margin: 0 0 6px;
-  font-family: 'Space Grotesk', sans-serif;
-  font-size: 24px;
-}
-
-.panel-header p {
-  margin: 0;
-  color: #5b6b71;
-}
-
-.panel-body {
-  margin-top: 18px;
-}
-
-.form {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 12px;
-}
-
-.field {
-  display: grid;
-  gap: 6px;
-  font-size: 13px;
-}
-
-.field label {
-  color: #5a6a70;
-}
-
-.field input {
-  border-radius: 12px;
-  border: 1px solid #d6e0e2;
-  padding: 10px 12px;
-  font-size: 14px;
-}
-
-.button-row {
-  display: flex;
-  gap: 10px;
-}
-
-.primary {
-  border: none;
-  border-radius: 12px;
-  padding: 10px 18px;
-  font-weight: 600;
-  background: linear-gradient(120deg, #0fb3b9, #5ce1e6);
-  color: #fff;
-  cursor: pointer;
-}
-
-.primary:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.state {
-  font-size: 13px;
-  color: #5a6a70;
-  margin-top: 12px;
-}
-
-.state.error {
-  color: #b13333;
-}
-
-.state.success {
-  color: #0f6b4f;
-}
-</style>

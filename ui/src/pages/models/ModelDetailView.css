@@ -1,0 +1,7 @@
+@import '../../styles/pages/detail-view.css';
+
+.form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}

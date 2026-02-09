@@ -1,0 +1,9 @@
+@import '../../styles/pages/detail-view.css';
+@import '../../styles/pages/agent-form-controls.css';
+
+.tag-group {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}

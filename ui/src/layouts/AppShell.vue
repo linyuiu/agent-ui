@@ -18,11 +18,11 @@
           <div v-if="error" class="sidebar__state error">{{ error }}</div>
 
         <div class="sidebar__menu">
-            <template v-for="item in modules" :key="item.id">
+            <template v-for="item in sidebarModules" :key="item.id">
               <div v-if="item.id === 'admin'" class="nav-group" :class="{ open: adminMenuOpen }">
                 <button
                   class="nav-item nav-group-trigger"
-                  :class="{ active: item.id === activeId }"
+                  :class="{ active: adminGroupActive }"
                   type="button"
                   @click="handleAdminModuleClick"
                 >
@@ -36,7 +36,7 @@
                   <div v-if="adminMenuOpen" class="nav-submenu">
                     <button
                       class="nav-sub-item"
-                      :class="{ active: activeAdminSubmodule === 'user-role' }"
+                      :class="{ active: activeSystemSubmodule === 'user-role' }"
                       type="button"
                       @click="goToAdminSubmodule('user-role')"
                     >
@@ -44,7 +44,7 @@
                     </button>
                     <button
                       class="nav-sub-item"
-                      :class="{ active: activeAdminSubmodule === 'permissions' }"
+                      :class="{ active: activeSystemSubmodule === 'permissions' }"
                       type="button"
                       @click="goToAdminSubmodule('permissions')"
                     >
@@ -52,7 +52,15 @@
                     </button>
                     <button
                       class="nav-sub-item"
-                      :class="{ active: activeAdminSubmodule === 'agent-sync' }"
+                      :class="{ active: activeSystemSubmodule === 'models' }"
+                      type="button"
+                      @click="goToModelsModule"
+                    >
+                      模型
+                    </button>
+                    <button
+                      class="nav-sub-item"
+                      :class="{ active: activeSystemSubmodule === 'agent-sync' }"
                       type="button"
                       @click="goToAdminSubmodule('agent-sync')"
                     >
@@ -144,6 +152,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { fetchModules, type ModuleSummary } from '../services/dashboard'
+import { clearAuthStorage } from '../utils/auth-storage'
 
 const router = useRouter()
 const route = useRoute()
@@ -163,6 +172,10 @@ const activeId = computed(() => {
   return (route.meta.module as string) || modules.value[0]?.id || 'agents'
 })
 
+const isModelsRoute = computed(() => (route.meta.module as string) === 'models')
+const adminGroupActive = computed(() => activeId.value === 'admin' || isModelsRoute.value)
+const sidebarModules = computed(() => modules.value.filter((item) => item.id !== 'models'))
+
 const adminSubmoduleList = ['user-role', 'permissions', 'agent-sync'] as const
 type AdminSubmodule = (typeof adminSubmoduleList)[number]
 
@@ -175,6 +188,10 @@ const normalizeAdminSubmodule = (value: unknown): AdminSubmodule => {
 }
 
 const activeAdminSubmodule = computed<AdminSubmodule>(() => normalizeAdminSubmodule(route.query.tab))
+const activeSystemSubmodule = computed(() => {
+  if (isModelsRoute.value) return 'models'
+  return activeAdminSubmodule.value
+})
 
 const getModuleTitle = (item: ModuleSummary) => {
   if (item.id === 'agents') return '智能体'
@@ -203,6 +220,11 @@ const goToAdminSubmodule = async (tab: AdminSubmodule) => {
   await router.push({ name: 'home-admin', query: { tab } })
 }
 
+const goToModelsModule = async () => {
+  adminMenuOpen.value = true
+  await router.push({ name: 'home-models' })
+}
+
 const handleModuleClick = async (id: string) => {
   if (id === 'admin') {
     await handleAdminModuleClick()
@@ -217,12 +239,7 @@ const handleModuleClick = async (id: string) => {
 }
 
 const handleLogout = async () => {
-  localStorage.removeItem('access_token')
-  localStorage.removeItem('user_email')
-  localStorage.removeItem('user_role')
-  localStorage.removeItem('user_name')
-  localStorage.removeItem('user_account')
-  localStorage.removeItem('user_permissions')
+  clearAuthStorage()
   showMenu.value = false
   await router.push({ name: 'login' })
 }
@@ -268,7 +285,8 @@ const loadModules = async () => {
 
 onMounted(loadModules)
 onMounted(() => {
-  if ((route.meta.module as string) === 'admin') {
+  const moduleId = route.meta.module as string
+  if (moduleId === 'admin' || moduleId === 'models') {
     adminMenuOpen.value = true
   }
 })
@@ -292,436 +310,12 @@ onBeforeUnmount(() => {
 watch(
   () => route.fullPath,
   () => {
-    if ((route.meta.module as string) === 'admin') {
+    const moduleId = route.meta.module as string
+    if (moduleId === 'admin' || moduleId === 'models') {
       adminMenuOpen.value = true
     }
   }
 )
 </script>
 
-<style scoped>
-.home {
-  --page-gap: 16px;
-  height: 100vh;
-  display: flex;
-  flex-direction: column;
-  gap: var(--page-gap);
-  padding: 16px clamp(20px, 4vw, 48px);
-  box-sizing: border-box;
-  overflow: hidden;
-}
-
-.topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  background: rgba(255, 255, 255, 0.72);
-  border-radius: 20px;
-  padding: 18px 24px;
-  box-shadow: 0 12px 36px rgba(15, 40, 55, 0.1);
-  height: 84px;
-  min-height: 84px;
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-}
-
-.badge {
-  display: inline-flex;
-  font-size: 12px;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  color: #516168;
-  background: rgba(15, 179, 185, 0.08);
-  padding: 6px 10px;
-  border-radius: 999px;
-  align-self: flex-start;
-}
-
-h1 {
-  font-family: 'Space Grotesk', sans-serif;
-  margin: 0;
-  font-size: 28px;
-}
-
-.topbar p {
-  margin: 4px 0 0;
-  color: #4b5b60;
-}
-
-.layout {
-  display: grid;
-  grid-template-columns: minmax(200px, 240px) 1fr;
-  gap: var(--page-gap);
-  flex: 1;
-  min-height: 0;
-}
-
-.sidebar {
-  background: rgba(255, 255, 255, 0.7);
-  border-radius: 22px;
-  padding: 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  box-shadow: 0 12px 30px rgba(15, 40, 55, 0.1);
-  overflow: hidden;
-}
-
-.sidebar__block {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  flex: 1;
-  min-height: 0;
-}
-
-.sidebar__title {
-  margin: 0;
-  font-weight: 600;
-  color: #3a4a4f;
-}
-
-.sidebar__menu {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  flex: 1;
-  min-height: 0;
-}
-
-.sidebar__state {
-  font-size: 12px;
-  color: #6a7a80;
-}
-
-.sidebar__state.error {
-  color: #b13333;
-}
-
-.nav-item {
-  text-align: left;
-  border: 1px solid rgba(15, 40, 55, 0.1);
-  background: transparent;
-  padding: 10px 12px;
-  border-radius: 16px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  color: #304045;
-  transition: background 0.2s ease, transform 0.2s ease;
-}
-
-.nav-item small {
-  color: #6a7a80;
-  font-size: 12px;
-}
-
-.nav-item:hover {
-  background: rgba(15, 179, 185, 0.08);
-  transform: translateY(-1px);
-}
-
-.nav-item.active {
-  background: rgba(15, 179, 185, 0.16);
-  font-weight: 600;
-}
-
-.nav-group {
-  display: grid;
-  gap: 8px;
-}
-
-.nav-group-trigger {
-  width: 100%;
-}
-
-.group-caret {
-  width: 8px;
-  height: 8px;
-  border-right: 2px solid #5c6b71;
-  border-bottom: 2px solid #5c6b71;
-  transform: rotate(45deg);
-  transition: transform 0.2s ease;
-  margin-left: auto;
-  flex: 0 0 auto;
-}
-
-.group-caret.open {
-  transform: rotate(-135deg);
-}
-
-.nav-submenu {
-  display: grid;
-  gap: 6px;
-  padding: 0 2px 2px 2px;
-}
-
-.nav-sub-item {
-  text-align: left;
-  border: 1px solid rgba(15, 40, 55, 0.1);
-  background: rgba(255, 255, 255, 0.85);
-  padding: 8px 10px;
-  border-radius: 12px;
-  cursor: pointer;
-  color: #304045;
-  font-size: 13px;
-  transition: background 0.2s ease, transform 0.2s ease;
-}
-
-.nav-sub-item:hover {
-  background: rgba(15, 179, 185, 0.08);
-  transform: translateY(-1px);
-}
-
-.nav-sub-item.active {
-  background: rgba(15, 179, 185, 0.16);
-  border-color: rgba(15, 179, 185, 0.35);
-  font-weight: 600;
-}
-
-.slide-fade-enter-active,
-.slide-fade-leave-active {
-  transition: opacity 0.18s ease, transform 0.18s ease;
-}
-
-.slide-fade-enter-from,
-.slide-fade-leave-to {
-  opacity: 0;
-  transform: translateY(-6px);
-}
-
-
-.content {
-  background: rgba(255, 255, 255, 0.78);
-  border-radius: 26px;
-  padding: 28px clamp(20px, 4vw, 40px) 32px;
-  box-shadow: 0 16px 40px rgba(15, 40, 55, 0.12);
-  min-height: 0;
-  overflow-y: auto;
-}
-
-.ghost {
-  border: 1px solid rgba(15, 179, 185, 0.4);
-  color: #0c7e85;
-  background: transparent;
-  padding: 10px 18px;
-  border-radius: 12px;
-  cursor: pointer;
-  font-weight: 600;
-}
-
-.ghost:hover {
-  background: rgba(15, 179, 185, 0.08);
-}
-
-.user-menu.bottom {
-  margin-top: auto;
-}
-
-.user-menu {
-  position: relative;
-  width: 100%;
-}
-
-.user-trigger {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  border: none;
-  background: #fff;
-  padding: 10px 14px;
-  border-radius: 16px;
-  box-shadow: 0 8px 20px rgba(15, 40, 55, 0.12);
-  cursor: pointer;
-  width: 100%;
-}
-
-.avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 12px;
-  background: radial-gradient(circle at 30% 30%, #4be0a5, #1aa27a);
-}
-
-.avatar.large {
-  width: 48px;
-  height: 48px;
-  border-radius: 16px;
-}
-
-.user-meta {
-  display: grid;
-  text-align: left;
-  min-width: 0;
-}
-
-.user-meta strong {
-  font-size: 14px;
-  color: #2f3f44;
-  max-width: 140px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.user-meta small {
-  font-size: 12px;
-  color: #6a7a80;
-  max-width: 140px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.chevron {
-  width: 10px;
-  height: 10px;
-  border-right: 2px solid #5c6b71;
-  border-bottom: 2px solid #5c6b71;
-  transform: rotate(45deg);
-  transition: transform 0.2s ease;
-  margin-left: auto;
-}
-
-.chevron.open {
-  transform: rotate(-135deg);
-}
-
-.menu-card {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: calc(100% + 12px);
-  width: auto;
-  max-width: 100%;
-  min-width: 0;
-  box-sizing: border-box;
-  background: #fff;
-  border-radius: 18px;
-  box-shadow: 0 16px 40px rgba(15, 40, 55, 0.2);
-  border: 1px solid rgba(15, 40, 55, 0.08);
-  padding: 12px;
-  z-index: 20;
-}
-
-.menu-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 10px 12px;
-  border-bottom: 1px solid rgba(15, 40, 55, 0.08);
-}
-
-.menu-header strong {
-  font-size: 14px;
-  color: #2d3c41;
-  max-width: 140px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.menu-header small {
-  display: block;
-  font-size: 12px;
-  color: #6a7a80;
-  max-width: 140px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.menu-items {
-  display: grid;
-  gap: 6px;
-  padding: 10px 0;
-}
-
-.menu-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border-radius: 12px;
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  font-size: 13px;
-  color: #2f3f44;
-}
-
-.menu-item:hover {
-  background: rgba(15, 179, 185, 0.12);
-}
-
-.menu-item.danger {
-  color: #b13333;
-}
-
-.menu-footer {
-  border-top: 1px solid rgba(15, 40, 55, 0.08);
-  padding-top: 8px;
-}
-
-.icon {
-  width: 20px;
-  height: 20px;
-  border-radius: 8px;
-  background: rgba(15, 179, 185, 0.12);
-  position: relative;
-}
-
-.icon::after {
-  content: '';
-  position: absolute;
-  inset: 6px;
-  border-radius: 4px;
-  background: #0fb3b9;
-}
-
-.icon.lock::after {
-  background: #3a87c6;
-}
-
-.icon.key::after {
-  background: #f5a524;
-}
-
-.icon.globe::after {
-  background: #7a6ff0;
-}
-
-.icon.info::after {
-  background: #5b6b71;
-}
-
-.icon.help::after {
-  background: #ff7f50;
-}
-
-.icon.logout::after {
-  background: #d35454;
-}
-
-.chevron-sm {
-  margin-left: auto;
-  width: 8px;
-  height: 8px;
-  border-right: 2px solid #98a2a8;
-  border-bottom: 2px solid #98a2a8;
-  transform: rotate(-45deg);
-}
-
-@media (max-width: 900px) {
-  .layout {
-    grid-template-columns: 1fr;
-  }
-}
-</style>
+<style scoped src="./AppShell.css"></style>
