@@ -26,6 +26,8 @@ class UserPublic(BaseModel):
     roles: list[str] = []
     status: str
     source: str
+    source_provider: str = "local"
+    source_subject: str = ""
     workspace: str
 
 
@@ -37,6 +39,7 @@ class AdminUserCreate(_PasswordBase):
     roles: list[str] | None = None
     status: str = "active"
     source: str = "local"
+    source_provider: str = "local"
     workspace: str = "default"
 
 
@@ -48,6 +51,7 @@ class AdminUserUpdate(BaseModel):
     roles: list[str] | None = None
     status: str | None = None
     source: str | None = None
+    source_provider: str | None = None
     workspace: str | None = None
     password: str | None = None
 
@@ -61,6 +65,8 @@ class AdminUserOut(BaseModel):
     roles: list[str] = []
     status: str
     source: str
+    source_provider: str = "local"
+    source_subject: str = ""
     workspace: str
     created_at: datetime
 
@@ -150,6 +156,62 @@ class PasswordChangeRequest(BaseModel):
 
 class AdminResetPasswordRequest(BaseModel):
     password: str | None = None
+
+
+class SsoProviderBase(BaseModel):
+    key: str = Field(min_length=2, max_length=64)
+    name: str = Field(min_length=1, max_length=255)
+    protocol: str = Field(pattern="^(ldap|cas|oidc|oauth2|saml2)$")
+    enabled: bool = True
+    auto_create_user: bool = True
+    default_role: str = "user"
+    default_workspace: str = "default"
+    config: dict = Field(default_factory=dict)
+    attribute_mapping: dict = Field(default_factory=dict)
+
+
+class SsoProviderCreate(SsoProviderBase):
+    pass
+
+
+class SsoProviderUpdate(BaseModel):
+    key: str | None = Field(default=None, min_length=2, max_length=64)
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    protocol: str | None = Field(default=None, pattern="^(ldap|cas|oidc|oauth2|saml2)$")
+    enabled: bool | None = None
+    auto_create_user: bool | None = None
+    default_role: str | None = None
+    default_workspace: str | None = None
+    config: dict | None = None
+    attribute_mapping: dict | None = None
+
+
+class SsoProviderOut(SsoProviderBase):
+    id: int
+    created_at: datetime
+
+
+class SsoProviderPublic(BaseModel):
+    key: str
+    name: str
+    protocol: str
+    login_mode: str = Field(pattern="^(redirect|password)$")
+
+
+class SsoPasswordLoginRequest(_PasswordBase):
+    provider_key: str = Field(min_length=2, max_length=64)
+    account: str = Field(min_length=1, max_length=255)
+
+
+class SsoProviderTestRequest(BaseModel):
+    protocol: str = Field(pattern="^(ldap|cas|oidc|oauth2|saml2)$")
+    config: dict = Field(default_factory=dict)
+    attribute_mapping: dict = Field(default_factory=dict)
+
+
+class SsoProviderTestResponse(BaseModel):
+    status: str
+    message: str
 
 
 class AgentGroupCreate(BaseModel):

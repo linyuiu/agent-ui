@@ -38,6 +38,8 @@ def list_users(
             roles=role_map.get(user.id, [user.role] if user.role else []),
             status=user.status,
             source=user.source,
+            source_provider=user.source_provider or "local",
+            source_subject=user.source_subject or "",
             workspace=user.workspace,
             created_at=user.created_at,
         )
@@ -73,6 +75,8 @@ def create_user(
         role=role_names[0],
         status=payload.status or "active",
         source=payload.source or "local",
+        source_provider=payload.source_provider or payload.source or "local",
+        source_subject="",
         workspace=payload.workspace or "default",
     )
     db.add(user)
@@ -90,6 +94,8 @@ def create_user(
         roles=assigned_roles,
         status=user.status,
         source=user.source,
+        source_provider=user.source_provider or "local",
+        source_subject=user.source_subject or "",
         workspace=user.workspace,
         created_at=user.created_at,
     )
@@ -138,6 +144,8 @@ def update_user(
 
     if payload.source:
         user.source = payload.source
+    if payload.source_provider:
+        user.source_provider = payload.source_provider
 
     if payload.workspace:
         user.workspace = payload.workspace
@@ -158,6 +166,8 @@ def update_user(
         roles=assigned_roles,
         status=user.status,
         source=user.source,
+        source_provider=user.source_provider or "local",
+        source_subject=user.source_subject or "",
         workspace=user.workspace,
         created_at=user.created_at,
     )

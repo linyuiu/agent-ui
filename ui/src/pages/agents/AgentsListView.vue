@@ -116,6 +116,7 @@
 
     <div v-if="loading" class="state">加载智能体列表中...</div>
     <div v-if="error" class="state error">{{ error }}</div>
+    <div v-if="openLinkError" class="state error">{{ openLinkError }}</div>
 
     <div v-if="!loading" class="grid">
       <button
@@ -143,10 +144,10 @@
           <a
             v-if="agent.url"
             class="link"
-            :href="agent.url"
+            :href="openAgentUrl(agent)"
             target="_blank"
             rel="noopener"
-            @click.stop
+            @click.stop="handleOpenLink(agent, $event)"
           >
             打开链接
           </a>
@@ -164,6 +165,7 @@ import { useCreatableGroupSelector } from '../../composables/use-creatable-group
 import { useDocumentClick } from '../../composables/use-document-click'
 import { createAgent, fetchAgents, type AgentSummary } from '../../services/agents'
 import { createAgentGroup } from '../../services/groups'
+import { buildOpenAgentUrl } from '../../utils/agent-links'
 import { formatIsoDateTime } from '../../utils/text-format'
 
 const router = useRouter()
@@ -171,6 +173,7 @@ const router = useRouter()
 const agents = ref<AgentSummary[]>([])
 const loading = ref(false)
 const error = ref('')
+const openLinkError = ref('')
 
 const showCreate = ref(false)
 
@@ -220,6 +223,20 @@ const {
 
 const totalCount = computed(() => agents.value.length)
 const activeCount = computed(() => agents.value.filter((agent) => agent.status === 'active').length)
+
+const openAgentUrl = (agent: AgentSummary) => buildOpenAgentUrl(agent)
+
+const handleOpenLink = (agent: AgentSummary, event: MouseEvent) => {
+  if (!agent.status_editable_only) {
+    return
+  }
+  if ((agent.status || '').toLowerCase() !== 'active') {
+    event.preventDefault()
+    openLinkError.value = '当前智能体不可用'
+    return
+  }
+  openLinkError.value = ''
+}
 
 const goDetail = async (id: string) => {
   await router.push({ name: 'home-agent-detail', params: { id } })

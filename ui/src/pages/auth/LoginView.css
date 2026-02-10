@@ -95,6 +95,15 @@
   transition: border 0.2s ease, box-shadow 0.2s ease;
 }
 
+.field select {
+  border-radius: 14px;
+  border: 1px solid #d6e0e2;
+  padding: 12px 14px;
+  font-size: 15px;
+  background: #fff;
+  transition: border 0.2s ease, box-shadow 0.2s ease;
+}
+
 .input-wrap {
   position: relative;
   display: flex;
@@ -137,6 +146,12 @@
 }
 
 .field input:focus {
+  outline: none;
+  border-color: #0fb3b9;
+  box-shadow: 0 0 0 3px rgba(15, 179, 185, 0.15);
+}
+
+.field select:focus {
   outline: none;
   border-color: #0fb3b9;
   box-shadow: 0 0 0 3px rgba(15, 179, 185, 0.15);
@@ -185,6 +200,28 @@
   color: #6c7b80;
   display: grid;
   gap: 4px;
+}
+
+.sso-block {
+  margin-top: 12px;
+  border-top: 1px solid rgba(15, 40, 55, 0.12);
+  padding-top: 14px;
+}
+
+.sso-title {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: #5a6b70;
+}
+
+.sso-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sso-btn {
+  padding: 8px 12px;
 }
 
 @keyframes float {

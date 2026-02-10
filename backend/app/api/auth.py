@@ -5,8 +5,16 @@ from .. import models, schemas, security
 from ..auth import get_current_user
 from ..permissions import get_user_role_names, summarize_permissions
 from ..db import get_db
+from ..services.sso import build_user_public
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+def _verify_password_safe(plain: str, hashed: str) -> bool:
+    try:
+        return security.verify_password(plain, hashed)
+    except Exception:
+        return False
 
 
 @router.post("/register", response_model=schemas.UserPublic, status_code=201)
@@ -40,17 +48,9 @@ def register(payload: schemas.RegisterRequest, db: Session = Depends(get_db)) ->
     db.commit()
     db.refresh(user)
     roles = get_user_role_names(db, user)
-    return schemas.UserPublic(
-        id=user.id,
-        account=user.account,
-        username=user.username,
-        email=user.email,
-        role=user.role,
-        roles=roles,
-        status=user.status,
-        source=user.source,
-        workspace=user.workspace,
-    )
+    user_public = build_user_public(db, user)
+    user_public.roles = roles
+    return user_public
 
 
 @router.post("/login", response_model=schemas.LoginResponse)
@@ -61,7 +61,12 @@ def login(payload: schemas.LoginRequest, db: Session = Depends(get_db)) -> schem
         .first()
     )
 
-    if not user or not security.verify_password(payload.password, user.password_hash):
+    if not user or not _verify_password_safe(payload.password, user.password_hash):
+        if user and user.source != "local":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="该账号请使用单点登录",
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials",
@@ -75,21 +80,10 @@ def login(payload: schemas.LoginRequest, db: Session = Depends(get_db)) -> schem
     token = security.create_access_token(
         {"sub": str(user.id), "email": user.email, "username": user.username, "account": user.account}
     )
-    roles = get_user_role_names(db, user)
     return schemas.LoginResponse(
         access_token=token,
         token_type="bearer",
-        user=schemas.UserPublic(
-            id=user.id,
-            account=user.account,
-            username=user.username,
-            email=user.email,
-            role=user.role,
-            roles=roles,
-            status=user.status,
-            source=user.source,
-            workspace=user.workspace,
-        ),
+        user=build_user_public(db, user),
     )
 
 
@@ -98,18 +92,7 @@ def me(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> schemas.UserPublic:
-    roles = get_user_role_names(db, current_user)
-    return schemas.UserPublic(
-        id=current_user.id,
-        account=current_user.account,
-        username=current_user.username,
-        email=current_user.email,
-        role=current_user.role,
-        roles=roles,
-        status=current_user.status,
-        source=current_user.source,
-        workspace=current_user.workspace,
-    )
+    return build_user_public(db, current_user)
 
 
 @router.get("/permissions", response_model=schemas.PermissionSummary)

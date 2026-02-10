@@ -13,6 +13,16 @@
 
       <form class="form" @submit.prevent="handleSubmit">
         <label class="field">
+          <span>登录方式</span>
+          <select v-model="passwordProviderKey">
+            <option value="">本地账号</option>
+            <option v-for="provider in passwordProviders" :key="provider.key" :value="provider.key">
+              {{ provider.name }} ({{ provider.protocol }})
+            </option>
+          </select>
+        </label>
+
+        <label class="field">
           <span>账号</span>
           <input
             v-model="account"
@@ -105,30 +115,114 @@
 
       <p v-if="error" class="notice notice--error">{{ error }}</p>
 
+      <div v-if="redirectProviders.length" class="sso-block">
+        <p class="sso-title">单点登录</p>
+        <div class="sso-actions">
+          <button
+            v-for="provider in redirectProviders"
+            :key="provider.key"
+            class="ghost sso-btn"
+            type="button"
+            @click="handleRedirectSso(provider.key)"
+          >
+            {{ provider.name }}
+          </button>
+        </div>
+      </div>
+
     </main>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { useRouter } from 'vue-router'
+import { createChatSession } from '../../services/chat-session'
+import {
+  buildSsoStartUrl,
+  fetchEnabledSsoProviders,
+  ssoPasswordLogin,
+  type SsoProviderPublic,
+} from '../../services/sso'
 import { persistAuthSession } from '../../utils/auth-storage'
 
+const route = useRoute()
 const router = useRouter()
 
 const account = ref('')
 const password = ref('')
+const passwordProviderKey = ref('')
+const ssoProviders = ref<SsoProviderPublic[]>([])
 const showPassword = ref(false)
 const loading = ref(false)
 const error = ref('')
 
 const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
+const redirectProviders = computed(() => ssoProviders.value.filter((item) => item.login_mode === 'redirect'))
+const passwordProviders = computed(() => ssoProviders.value.filter((item) => item.login_mode === 'password'))
+
+const getRedirectTarget = () =>
+  typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/')
+    ? route.query.redirect
+    : ''
+
+const persistPermissions = async (token: string) => {
+  try {
+    const permResponse = await fetch(`${apiBase}/auth/permissions`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+    if (permResponse.ok) {
+      const permPayload = await permResponse.json()
+      persistAuthSession({ permissions: permPayload })
+    }
+  } catch {
+    // ignore permission fetch failures on login
+  }
+}
+
+const finalizeLogin = async (payload: { access_token?: string; user?: unknown }) => {
+  const token = payload?.access_token || ''
+  if (!token) throw new Error('登录响应缺少 token')
+  persistAuthSession({
+    token,
+    user: payload?.user as Record<string, unknown>,
+  })
+  await persistPermissions(token)
+
+  const redirectTarget = getRedirectTarget()
+  const isChatRedirect = redirectTarget.startsWith('/chat/')
+  if (isChatRedirect) {
+    await createChatSession()
+    window.location.assign(redirectTarget)
+    return
+  }
+  createChatSession().catch(() => undefined)
+  if (redirectTarget) {
+    await router.push(redirectTarget)
+    return
+  }
+  await router.push({ name: 'home-agents' })
+}
+
 const handleSubmit = async () => {
   error.value = ''
   loading.value = true
 
   try {
+    if (passwordProviderKey.value) {
+      const payload = await ssoPasswordLogin({
+        provider_key: passwordProviderKey.value,
+        account: account.value,
+        password: password.value,
+      })
+      await finalizeLogin(payload)
+      return
+    }
+
     const response = await fetch(`${apiBase}/auth/login`, {
       method: 'POST',
       headers: {
@@ -139,44 +233,56 @@ const handleSubmit = async () => {
         password: password.value,
       }),
     })
-
     const payload = await response.json().catch(() => ({}))
-
     if (!response.ok) {
       const detail = payload?.detail
-      const message = typeof detail === 'string' ? detail : '登录失败，请检查账号密码。'
-      throw new Error(message)
+      throw new Error(typeof detail === 'string' ? detail : '登录失败，请检查账号密码。')
     }
-
-    const token = payload?.access_token
-    persistAuthSession({
-      token,
-      user: payload?.user,
-    })
-
-    if (token) {
-      try {
-        const permResponse = await fetch(`${apiBase}/auth/permissions`, {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        })
-        if (permResponse.ok) {
-          const permPayload = await permResponse.json()
-          persistAuthSession({ permissions: permPayload })
-        }
-      } catch {
-        // ignore permission fetch failures on login
-      }
-    }
-
-    await router.push({ name: 'home-agents' })
+    await finalizeLogin(payload)
   } catch (err) {
     error.value = err instanceof Error ? err.message : '登录失败，请稍后重试。'
   } finally {
     loading.value = false
   }
 }
+
+const handleRedirectSso = (providerKey: string) => {
+  const redirectTarget = getRedirectTarget() || '/home/agents'
+  window.location.assign(buildSsoStartUrl(providerKey, redirectTarget))
+}
+
+const consumeSsoHashToken = async () => {
+  const hash = window.location.hash.replace(/^#/, '')
+  if (!hash) return
+  const hashParams = new URLSearchParams(hash)
+  const token = hashParams.get('token') || ''
+  if (!token) return
+
+  loading.value = true
+  error.value = ''
+  try {
+    const meResp = await fetch(`${apiBase}/auth/me`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+    if (!meResp.ok) {
+      throw new Error('单点登录状态失效，请重新登录')
+    }
+    const user = await meResp.json()
+    history.replaceState(null, '', window.location.pathname + window.location.search)
+    await finalizeLogin({ access_token: token, user })
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '单点登录失败'
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(async () => {
+  ssoProviders.value = await fetchEnabledSsoProviders()
+  await consumeSsoHashToken()
+})
 </script>
 
 <style scoped src="./LoginView.css"></style>

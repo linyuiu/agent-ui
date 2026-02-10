@@ -48,6 +48,13 @@ def test_rewrite_query_replaces_token_keys_and_proxy_id_values() -> None:
     )
 
 
+def test_rewrite_query_strips_internal_auth_param() -> None:
+    agent = _agent()
+    query = "_auth=jwt-token&id=proxy-123"
+    rewritten = _rewrite_query_for_upstream(agent, query)
+    assert rewritten == "id=token-abc"
+
+
 def test_rewrite_json_payload_replaces_nested_token_keys() -> None:
     agent = _agent()
     request = _RequestStub("application/json")
@@ -103,4 +110,3 @@ def test_should_not_try_fallback_path_for_json_success() -> None:
         json={"code": 200, "data": {}},
     )
     assert _should_try_fallback_path(response) is False
-

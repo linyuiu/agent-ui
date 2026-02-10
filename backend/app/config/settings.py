@@ -49,6 +49,8 @@ APP_HOST = os.getenv("APP_HOST", "127.0.0.1")
 APP_PORT = _as_int("APP_PORT", 8000)
 APP_RELOAD = _as_bool("APP_RELOAD", True)
 CORS_ORIGINS = _as_csv("CORS_ORIGINS", "http://localhost:5173")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", f"http://{APP_HOST}:{APP_PORT}")
+FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:5173")
 
 JWT_SECRET = os.getenv("JWT_SECRET") or ""
 ACCESS_TOKEN_EXPIRE_MINUTES = _as_int("ACCESS_TOKEN_EXPIRE_MINUTES", 480)

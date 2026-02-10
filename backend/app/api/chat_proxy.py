@@ -5,12 +5,16 @@ import logging
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
-from urllib.parse import parse_qsl, urlencode
+from urllib.parse import parse_qsl, quote, urlencode
 from urllib.parse import urlparse
 
 from .. import models
+from ..auth import get_user_from_token
+from ..config import settings
 from ..db import get_db
+from ..permissions import evaluate_permission, require_menu_action
 from ..services.chat_links import build_proxy_chat_url, build_upstream_chat_url
 
 router = APIRouter(tags=["chat_proxy"])
@@ -47,8 +51,13 @@ _RESPONSE_HEADER_BLOCKLIST = {
     "upgrade",
 }
 _PROXY_ID_COOKIE = "chat_proxy_id"
+_AUTH_COOKIE = "chat_proxy_auth"
+_AUTH_QUERY_KEY = "_auth"
+_AUTH_REQUIRED_DETAIL = "访问需要登录"
+_PERMISSION_REQUIRED_DETAIL = "访问需要权限"
 _TOKEN_QUERY_KEYS = {"accesstoken", "acesstoken", "token"}
 _TOKEN_JSON_KEYS = {"accesstoken", "acesstoken", "token"}
+_CHAT_COOKIE_MAX_AGE = max(int(settings.ACCESS_TOKEN_EXPIRE_MINUTES or 1) * 60, 60)
 
 
 def _normalize_token_key(raw_key: str) -> str:
@@ -129,7 +138,9 @@ def _agent_from_query(db: Session, query: str) -> models.Agent | None:
 
     candidates: list[str] = []
     seen: set[str] = set()
-    for _, value in params:
+    for key, value in params:
+        if key.lower() == _AUTH_QUERY_KEY:
+            continue
         candidate = (value or "").strip()
         if not candidate or candidate in seen:
             continue
@@ -203,6 +214,9 @@ def _rewrite_query_for_upstream(agent: models.Agent, query: str) -> str:
     rewritten = False
     next_params: list[tuple[str, str]] = []
     for key, value in params:
+        if key.lower() == _AUTH_QUERY_KEY:
+            rewritten = True
+            continue
         normalized = _normalize_token_key(key)
         if normalized in _TOKEN_QUERY_KEYS:
             next_params.append((key, agent.upstream_token))
@@ -217,6 +231,121 @@ def _rewrite_query_for_upstream(agent: models.Agent, query: str) -> str:
     if not rewritten:
         return query
     return urlencode(next_params, doseq=True)
+
+
+def _extract_bearer_token(request: Request) -> str:
+    raw = (request.headers.get("authorization") or "").strip()
+    if not raw:
+        return ""
+    parts = raw.split(None, 1)
+    if len(parts) != 2:
+        return ""
+    if parts[0].lower() != "bearer":
+        return ""
+    return parts[1].strip()
+
+
+def _resolve_authenticated_context(request: Request, db: Session) -> tuple[str, models.User]:
+    token_candidates = [
+        _extract_bearer_token(request),
+        (request.cookies.get(_AUTH_COOKIE) or "").strip(),
+    ]
+
+    checked: set[str] = set()
+    for candidate in token_candidates:
+        token = (candidate or "").strip()
+        if not token or token in checked:
+            continue
+        checked.add(token)
+        try:
+            user = get_user_from_token(token, db)
+            return token, user
+        except HTTPException:
+            continue
+
+    raise HTTPException(status_code=401, detail=_AUTH_REQUIRED_DETAIL)
+
+
+def _set_chat_auth_cookie(response: Response, token: str, *, secure: bool) -> None:
+    response.set_cookie(
+        key=_AUTH_COOKIE,
+        value=token,
+        path="/chat",
+        max_age=_CHAT_COOKIE_MAX_AGE,
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+    )
+
+
+def _is_browser_navigation(request: Request) -> bool:
+    if request.method.upper() != "GET":
+        return False
+    accept = (request.headers.get("accept") or "").lower()
+    if "text/html" in accept:
+        return True
+    fetch_mode = (request.headers.get("sec-fetch-mode") or "").lower()
+    fetch_dest = (request.headers.get("sec-fetch-dest") or "").lower()
+    return fetch_mode == "navigate" or fetch_dest == "document"
+
+
+def _login_redirect_url(request: Request) -> str:
+    target = request.url.path
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+    return f"/login?redirect={quote(target, safe='')}"
+
+
+def _resolve_agent_groups(agent: models.Agent) -> list[str]:
+    groups = list(agent.groups or [])
+    if not groups and agent.group_name:
+        groups = [agent.group_name]
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in groups:
+        name = str(item or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        normalized.append(name)
+    return normalized
+
+
+def _require_agent_chat_access(db: Session, user: models.User, agent: models.Agent) -> None:
+    require_menu_action(db, user, action="view", menu_id="agents")
+    groups = _resolve_agent_groups(agent)
+    decision = evaluate_permission(
+        db,
+        user,
+        action="view",
+        scope="resource",
+        resource_type="agent",
+        resource_id=str(agent.id),
+        resource_attrs={"groups": groups},
+    )
+    if not decision.allowed:
+        raise HTTPException(status_code=403, detail=_PERMISSION_REQUIRED_DETAIL)
+
+
+@router.post("/chat/session")
+def create_chat_session(
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    token = _extract_bearer_token(request)
+    if not token:
+        raise HTTPException(status_code=401, detail=_AUTH_REQUIRED_DETAIL)
+    get_user_from_token(token, db)
+    _set_chat_auth_cookie(response, token, secure=request.url.scheme == "https")
+    return {"status": "ok"}
+
+
+@router.delete("/chat/session")
+def clear_chat_session(response: Response) -> dict[str, str]:
+    response.delete_cookie(key=_AUTH_COOKIE, path="/chat")
+    response.delete_cookie(key=_PROXY_ID_COOKIE, path="/chat")
+    return {"status": "ok"}
 
 
 def _rewrite_json_tokens(value: object, *, proxy_id: str, upstream_token: str) -> object:
@@ -319,11 +448,18 @@ async def proxy_chat(
     request: Request,
     db: Session = Depends(get_db),
 ) -> Response:
+    try:
+        auth_token, current_user = _resolve_authenticated_context(request, db)
+    except HTTPException as exc:
+        if exc.status_code == 401 and _is_browser_navigation(request):
+            return RedirectResponse(url=_login_redirect_url(request), status_code=307)
+        raise
     agent, upstream_paths = _resolve_proxy_target(db, request, request_path)
     if not agent:
         raise HTTPException(status_code=404, detail="Chat endpoint not found")
+    _require_agent_chat_access(db, current_user, agent)
     if not _is_chat_available(agent):
-        raise HTTPException(status_code=403, detail="Agent is unavailable")
+        raise HTTPException(status_code=403, detail="当前智能体不可用")
     if not agent.upstream_base_url or not agent.upstream_token:
         raise HTTPException(status_code=404, detail="Chat upstream is not configured")
 
@@ -394,4 +530,5 @@ async def proxy_chat(
         path="/chat",
         samesite="lax",
     )
+    _set_chat_auth_cookie(response, auth_token, secure=request.url.scheme == "https")
     return response

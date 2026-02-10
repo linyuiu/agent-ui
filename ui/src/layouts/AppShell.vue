@@ -52,6 +52,14 @@
                     </button>
                     <button
                       class="nav-sub-item"
+                      :class="{ active: activeSystemSubmodule === 'auth-settings' }"
+                      type="button"
+                      @click="goToAdminSubmodule('auth-settings')"
+                    >
+                      登录系统
+                    </button>
+                    <button
+                      class="nav-sub-item"
                       :class="{ active: activeSystemSubmodule === 'models' }"
                       type="button"
                       @click="goToModelsModule"
@@ -152,6 +160,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { fetchModules, type ModuleSummary } from '../services/dashboard'
+import { clearChatSession } from '../services/chat-session'
 import { clearAuthStorage } from '../utils/auth-storage'
 
 const router = useRouter()
@@ -176,7 +185,7 @@ const isModelsRoute = computed(() => (route.meta.module as string) === 'models')
 const adminGroupActive = computed(() => activeId.value === 'admin' || isModelsRoute.value)
 const sidebarModules = computed(() => modules.value.filter((item) => item.id !== 'models'))
 
-const adminSubmoduleList = ['user-role', 'permissions', 'agent-sync'] as const
+const adminSubmoduleList = ['user-role', 'permissions', 'auth-settings', 'agent-sync'] as const
 type AdminSubmodule = (typeof adminSubmoduleList)[number]
 
 const normalizeAdminSubmodule = (value: unknown): AdminSubmodule => {
@@ -239,6 +248,7 @@ const handleModuleClick = async (id: string) => {
 }
 
 const handleLogout = async () => {
+  await clearChatSession()
   clearAuthStorage()
   showMenu.value = false
   await router.push({ name: 'login' })

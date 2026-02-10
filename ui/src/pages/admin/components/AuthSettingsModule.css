@@ -1,0 +1,127 @@
+@import '../../../styles/shared.css';
+
+.auth-settings-panel {
+  padding: 0;
+  overflow: hidden;
+}
+
+.sso-tab-row {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 14px 18px 12px;
+  border-bottom: 1px solid rgba(15, 40, 55, 0.12);
+  flex-wrap: wrap;
+}
+
+.sso-tab {
+  border: none;
+  background: transparent;
+  color: #4a5a60;
+  font-weight: 700;
+  font-size: 26px;
+  padding: 4px 2px 8px;
+  cursor: pointer;
+  border-bottom: 3px solid transparent;
+  transition: color 0.2s ease, border-color 0.2s ease;
+}
+
+.sso-tab.active {
+  color: #0f6fd9;
+  border-bottom-color: #2e7df6;
+}
+
+.sso-form-wrap {
+  padding: 16px 18px 18px;
+  display: grid;
+  gap: 10px;
+}
+
+.sso-form-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.sso-form-grid .field label {
+  font-size: 14px;
+  color: #394a50;
+  font-weight: 600;
+}
+
+.sso-form-grid .field input {
+  height: 40px;
+}
+
+.required {
+  color: #f06262;
+}
+
+.sub-title {
+  margin-top: 4px;
+  font-size: 13px;
+  color: #66777e;
+  font-weight: 700;
+}
+
+.full-row {
+  grid-column: 1 / -1;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.checkbox-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #3e5057;
+  font-size: 14px;
+}
+
+.checkbox-item input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  accent-color: #0fb3b9;
+}
+
+.password-field {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.password-toggle {
+  border: 1px solid rgba(15, 40, 55, 0.2);
+  border-radius: 10px;
+  background: #fff;
+  color: #4e5f66;
+  height: 40px;
+  padding: 0 12px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.password-toggle:hover {
+  background: rgba(15, 179, 185, 0.08);
+  color: #0c7e85;
+}
+
+.button-row {
+  margin-top: 4px;
+}
+
+.current-config {
+  margin-top: 2px;
+}
+
+@media (max-width: 900px) {
+  .sso-tab {
+    font-size: 18px;
+  }
+}

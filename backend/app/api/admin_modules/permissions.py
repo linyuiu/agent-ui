@@ -14,6 +14,7 @@ from .common import (
     ensure_role_exists,
     expand_actions,
     expand_agent_group_permissions,
+    expand_resource_wildcards,
     require_menu_manage,
     require_menu_view,
 )
@@ -75,6 +76,8 @@ def _build_subject_permissions_summary(
         inherited_map = collect_actions(role_grants)
 
         if scope == "resource":
+            direct_map = expand_resource_wildcards(db, direct_map)
+            inherited_map = expand_resource_wildcards(db, inherited_map)
             direct_map = {
                 key: set(actions)
                 for key, actions in direct_map.items()
@@ -129,6 +132,7 @@ def _build_subject_permissions_summary(
         )
         effective_map = collect_actions(role_grants)
         if scope == "resource":
+            effective_map = expand_resource_wildcards(db, effective_map)
             effective_map = {
                 key: set(actions)
                 for key, actions in effective_map.items()
@@ -229,6 +233,7 @@ def update_subject_permissions(
             )
         role_map_raw = collect_actions(role_grants)
         if scope == "resource":
+            role_map_raw = expand_resource_wildcards(db, role_map_raw)
             role_map_raw = {
                 key: set(actions)
                 for key, actions in role_map_raw.items()

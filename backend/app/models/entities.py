@@ -16,6 +16,8 @@ class User(Base):
     role = Column(String(50), nullable=False, default="user")
     status = Column(String(50), nullable=False, default="active")
     source = Column(String(50), nullable=False, default="local")
+    source_provider = Column(String(64), nullable=False, default="local")
+    source_subject = Column(String(255), nullable=False, default="")
     workspace = Column(String(100), nullable=False, default="default")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
@@ -124,6 +126,22 @@ class AgentApiConfig(Base):
     id = Column(Integer, primary_key=True, index=True)
     base_url = Column(String(255), unique=True, nullable=False, index=True)
     token = Column(String(1024), nullable=False, default="")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class AuthProviderConfig(Base):
+    __tablename__ = "auth_provider_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String(64), unique=True, nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    protocol = Column(String(20), nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True)
+    auto_create_user = Column(Boolean, nullable=False, default=True)
+    default_role = Column(String(50), nullable=False, default="user")
+    default_workspace = Column(String(100), nullable=False, default="default")
+    config = Column(JSON, nullable=False, default=dict)
+    attribute_mapping = Column(JSON, nullable=False, default=dict)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 

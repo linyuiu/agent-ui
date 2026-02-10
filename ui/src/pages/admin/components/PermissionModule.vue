@@ -247,6 +247,7 @@ const subjectReadOnly = ref(false)
 const permissionSaving = ref(false)
 const permissionError = ref('')
 const permissionSuccess = ref('')
+let permissionRequestSeq = 0
 
 const subjectTab = ref<'user' | 'role'>('user')
 const scopeTab = ref<'menu' | 'resource'>('menu')
@@ -408,19 +409,33 @@ const loadSubjectPermissions = async () => {
     permissionsLoading.value = false
     return
   }
+  const requestSeq = ++permissionRequestSeq
+  const requestSubjectType = subjectTab.value
+  const requestSubjectId = selectedSubjectId.value
+  const requestScope = scopeTab.value
   permissionsLoading.value = true
   permissionsError.value = ''
   try {
     const summary = await fetchSubjectPermissions({
-      subject_type: subjectTab.value,
-      subject_id: selectedSubjectId.value,
-      scope: scopeTab.value,
+      subject_type: requestSubjectType,
+      subject_id: requestSubjectId,
+      scope: requestScope,
     })
+    if (requestSeq !== permissionRequestSeq) return
+    if (
+      requestSubjectType !== subjectTab.value ||
+      requestSubjectId !== selectedSubjectId.value ||
+      requestScope !== scopeTab.value
+    ) {
+      return
+    }
     applyPermissionSummary(summary)
   } catch (err) {
+    if (requestSeq !== permissionRequestSeq) return
     permissionsError.value = err instanceof Error ? err.message : '加载失败'
     applyPermissionSummary(null)
   } finally {
+    if (requestSeq !== permissionRequestSeq) return
     permissionsLoading.value = false
   }
 }
@@ -473,8 +488,11 @@ const getRowState = (row: PermissionRow) => {
   return permissionState.value[row.key]
 }
 
-const isRowChecked = (row: PermissionRow, action: PermissionAction) =>
-  permissionState.value[row.key]?.[action] ?? false
+const isRowChecked = (row: PermissionRow, action: PermissionAction) => {
+  if (permissionState.value[row.key]?.[action]) return true
+  if (inheritedState.value[row.key]?.[action]) return true
+  return false
+}
 
 const setActionValue = (row: PermissionRow, action: PermissionAction, value: boolean) => {
   if (isActionDisabled(row, action)) return

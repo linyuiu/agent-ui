@@ -37,6 +37,10 @@ def ensure_schema() -> None:
                 conn.execute(text("ALTER TABLE users ADD COLUMN status VARCHAR(50)"))
             if "source" not in columns:
                 conn.execute(text("ALTER TABLE users ADD COLUMN source VARCHAR(50)"))
+            if "source_provider" not in columns:
+                conn.execute(text("ALTER TABLE users ADD COLUMN source_provider VARCHAR(64)"))
+            if "source_subject" not in columns:
+                conn.execute(text("ALTER TABLE users ADD COLUMN source_subject VARCHAR(255)"))
             if "workspace" not in columns:
                 conn.execute(text("ALTER TABLE users ADD COLUMN workspace VARCHAR(100)"))
 
@@ -71,6 +75,20 @@ def ensure_schema() -> None:
             conn.execute(
                 text(
                     "UPDATE users "
+                    "SET source_provider = COALESCE(NULLIF(source_provider, ''), 'local') "
+                    "WHERE source_provider IS NULL OR source_provider = ''"
+                )
+            )
+            conn.execute(
+                text(
+                    "UPDATE users "
+                    "SET source_subject = COALESCE(source_subject, '') "
+                    "WHERE source_subject IS NULL"
+                )
+            )
+            conn.execute(
+                text(
+                    "UPDATE users "
                     "SET workspace = COALESCE(NULLIF(workspace, ''), 'default') "
                     "WHERE workspace IS NULL OR workspace = ''"
                 )
@@ -79,6 +97,8 @@ def ensure_schema() -> None:
             conn.execute(text("ALTER TABLE users ALTER COLUMN username SET NOT NULL"))
             conn.execute(text("ALTER TABLE users ALTER COLUMN status SET NOT NULL"))
             conn.execute(text("ALTER TABLE users ALTER COLUMN source SET NOT NULL"))
+            conn.execute(text("ALTER TABLE users ALTER COLUMN source_provider SET NOT NULL"))
+            conn.execute(text("ALTER TABLE users ALTER COLUMN source_subject SET NOT NULL"))
             conn.execute(text("ALTER TABLE users ALTER COLUMN workspace SET NOT NULL"))
             conn.execute(
                 text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_account ON users (account)")
@@ -308,6 +328,12 @@ def _seed_admin_user() -> None:
             if existing.role != "admin":
                 existing.role = "admin"
                 changed = True
+            if (existing.source_provider or "") != "local":
+                existing.source_provider = "local"
+                changed = True
+            if existing.source_subject is None:
+                existing.source_subject = ""
+                changed = True
             if changed:
                 session.commit()
             return
@@ -319,6 +345,8 @@ def _seed_admin_user() -> None:
             role="admin",
             status="active",
             source="local",
+            source_provider="local",
+            source_subject="",
             workspace="default",
         )
         session.add(admin_user)

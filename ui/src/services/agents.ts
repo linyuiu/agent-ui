@@ -10,6 +10,8 @@ export type AgentSummary = {
   url: string
   groups: string[]
   editable: boolean
+  source_type?: string
+  status_editable_only?: boolean
 }
 
 export type AgentDetail = AgentSummary

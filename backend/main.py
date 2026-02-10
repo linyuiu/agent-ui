@@ -1,7 +1,39 @@
-from app.config import settings
-from app.main import app
+from contextlib import asynccontextmanager
 
-__all__ = ["app"]
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.api import register_routes
+from app.config import settings
+from app.migrations import ensure_schema
+
+
+def create_app() -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        ensure_schema()
+        yield
+
+    app = FastAPI(title="Agent-UI", lifespan=lifespan)
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.CORS_ORIGINS or ["http://localhost:5173"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @app.get("/health")
+    def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    register_routes(app)
+    return app
+
+
+app = create_app()
+__all__ = ["app", "create_app"]
 
 
 if __name__ == "__main__":

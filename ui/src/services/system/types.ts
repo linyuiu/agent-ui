@@ -60,6 +60,8 @@ export type AdminUser = {
   roles?: string[]
   status: string
   source: string
+  source_provider?: string
+  source_subject?: string
   workspace: string
   created_at: string
 }
@@ -73,6 +75,7 @@ export type AdminUserCreate = {
   roles?: string[]
   status?: string
   source?: string
+  source_provider?: string
   workspace?: string
 }
 
@@ -84,8 +87,57 @@ export type AdminUserUpdate = {
   roles?: string[]
   status?: string
   source?: string
+  source_provider?: string
   workspace?: string
   password?: string
+}
+
+export type SsoProviderProtocol = 'ldap' | 'cas' | 'oidc' | 'oauth2' | 'saml2'
+
+export type SsoProvider = {
+  id: number
+  key: string
+  name: string
+  protocol: SsoProviderProtocol
+  enabled: boolean
+  auto_create_user: boolean
+  default_role: string
+  default_workspace: string
+  config: Record<string, unknown>
+  attribute_mapping: Record<string, unknown>
+  created_at: string
+}
+
+export type SsoProviderCreate = {
+  key: string
+  name: string
+  protocol: SsoProviderProtocol
+  enabled?: boolean
+  auto_create_user?: boolean
+  default_role?: string
+  default_workspace?: string
+  config?: Record<string, unknown>
+  attribute_mapping?: Record<string, unknown>
+}
+
+export type SsoProviderUpdate = Partial<SsoProviderCreate>
+
+export type SsoProviderTestRequest = {
+  protocol: SsoProviderProtocol
+  config?: Record<string, unknown>
+  attribute_mapping?: Record<string, unknown>
+}
+
+export type SsoProviderTestResponse = {
+  status: string
+  message: string
+}
+
+export type SsoProviderPublic = {
+  key: string
+  name: string
+  protocol: SsoProviderProtocol
+  login_mode: 'redirect' | 'password'
 }
 
 export type AgentImportRequest = {

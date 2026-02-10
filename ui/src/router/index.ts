@@ -117,7 +117,12 @@ router.beforeEach((to) => {
 
   const token = localStorage.getItem('access_token')
   if (!token) {
-    return { name: 'login' }
+    return {
+      name: 'login',
+      query: {
+        redirect: to.fullPath,
+      },
+    }
   }
 
   return true
