@@ -155,7 +155,7 @@
                 <button
                   class="filter-trigger inline-trigger"
                   type="button"
-                  :disabled="user.account === 'admin'"
+                  :disabled="isAdminAccount(user.account)"
                   @click.stop="toggleStatusDropdown(user.id)"
                 >
                   <span>{{ user.status }}</span>
@@ -180,7 +180,7 @@
                 <button
                   class="filter-trigger inline-trigger"
                   type="button"
-                  :disabled="user.account === 'admin'"
+                  :disabled="isAdminAccount(user.account)"
                   @click.stop="toggleRoleDropdown(user.id)"
                 >
                   <span>{{ user.roles?.length ? user.roles.join(', ') : user.role }}</span>
@@ -206,8 +206,8 @@
               <button
                 class="ghost action-control"
                 type="button"
-                :disabled="user.account === 'admin'"
-                :title="user.account === 'admin' ? 'admin 账号不可修改角色/状态' : ''"
+                :disabled="isAdminAccount(user.account)"
+                :title="isAdminAccount(user.account) ? 'admin 账号不可修改角色/状态' : ''"
                 @click="handleUpdateUser(user)"
               >
                 保存
@@ -218,8 +218,8 @@
               <button
                 class="ghost danger action-control"
                 type="button"
-                :disabled="user.account === 'admin'"
-                :title="user.account === 'admin' ? 'admin 账号不可删除' : ''"
+                :disabled="isAdminAccount(user.account)"
+                :title="isAdminAccount(user.account) ? 'admin 账号不可删除' : ''"
                 @click="openDeleteUser(user)"
               >
                 删除
@@ -356,27 +356,20 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { useAdminSubjects } from '../../../composables/use-admin-subjects'
+import { useDocumentClick } from '../../../composables/use-document-click'
+import { includesKeyword, useSearchableList } from '../../../composables/use-searchable-list'
 import {
   createRole,
   createUser,
   deleteRole,
   deleteUser,
-  fetchRoles,
-  fetchUsers,
   resetUserPassword,
   updateUser,
   type AdminUser,
   type Role,
 } from '../../../services/admin'
-
-const roles = ref<Role[]>([])
-const users = ref<AdminUser[]>([])
-
-const usersLoading = ref(false)
-const usersError = ref('')
-const rolesLoading = ref(false)
-const rolesError = ref('')
 
 const roleLoading = ref(false)
 const roleError = ref('')
@@ -424,8 +417,7 @@ const userForm = ref({
   workspace: 'default',
 })
 
-const orderRoleNames = (roleNames: string[]) => {
-  const catalog = roles.value.map((item) => item.name)
+const orderRoleNamesByCatalog = (roleNames: string[], catalog: string[] = []) => {
   const unique = Array.from(new Set(roleNames.map((item) => String(item || '').trim()).filter(Boolean)))
 
   return unique.sort((a, b) => {
@@ -438,9 +430,9 @@ const orderRoleNames = (roleNames: string[]) => {
   })
 }
 
-const normalizeRoleNames = (singleRole?: string, roleNames?: string[]) => {
+const normalizeRoleNamesByCatalog = (singleRole?: string, roleNames?: string[], catalog: string[] = []) => {
   const source = roleNames?.length ? roleNames : singleRole ? [singleRole] : []
-  const ordered = orderRoleNames(source)
+  const ordered = orderRoleNamesByCatalog(source, catalog)
   if (ordered.length) return ordered
   return ['user']
 }
@@ -450,6 +442,26 @@ const getPrimaryRole = (roleNames: string[]) => {
   return roleNames[0] || 'user'
 }
 
+const mapUsersWithRoles = (records: AdminUser[], roleCatalog: Role[]) => {
+  const catalog = roleCatalog.map((item) => item.name)
+  return records.map((item) => {
+    const nextRoles = normalizeRoleNamesByCatalog(item.role, item.roles, catalog)
+    return {
+      ...item,
+      role: getPrimaryRole(nextRoles),
+      roles: nextRoles,
+    }
+  })
+}
+
+const { roles, users, usersLoading, usersError, rolesLoading, rolesError, loadUsers, loadRoles } =
+  useAdminSubjects({ mapUsers: mapUsersWithRoles })
+
+const roleCatalog = computed(() => roles.value.map((item) => item.name))
+
+const normalizeRoleNames = (singleRole?: string, roleNames?: string[]) =>
+  normalizeRoleNamesByCatalog(singleRole, roleNames, roleCatalog.value)
+
 const formatRoleList = (roleNames?: string[]) => normalizeRoleNames(undefined, roleNames).join(', ')
 
 const toggleRoleName = (roleNames: string[], targetRole: string) => {
@@ -458,66 +470,28 @@ const toggleRoleName = (roleNames: string[], targetRole: string) => {
   if (idx >= 0) {
     if (next.length === 1) return next
     next.splice(idx, 1)
-    return orderRoleNames(next)
+    return orderRoleNamesByCatalog(next, roleCatalog.value)
   }
   next.push(targetRole)
-  return orderRoleNames(next)
+  return orderRoleNamesByCatalog(next, roleCatalog.value)
 }
 
-const filteredUsers = computed(() => {
-  const query = userSearch.value.trim().toLowerCase()
-  if (!query) return users.value
-  return users.value.filter((user) => {
-    const field = userFilterField.value === 'account' ? user.account : user.username
-    return String(field || '').toLowerCase().includes(query)
-  })
-})
+const { filtered: filteredUsers } = useSearchableList(users, userSearch, (user, keyword) =>
+  includesKeyword(keyword, userFilterField.value === 'account' ? user.account : user.username),
+)
 
 const shouldOpenUserDropdownUp = (index: number) => {
   const threshold = 2
   return index >= Math.max(0, filteredUsers.value.length - threshold)
 }
 
-const filteredRoleList = computed(() => {
-  const query = roleSearch.value.trim().toLowerCase()
-  if (!query) return roles.value
-  return roles.value.filter((role) => String(role.name || '').toLowerCase().includes(query))
-})
+const { filtered: filteredRoleList } = useSearchableList(roles, roleSearch, (role, keyword) =>
+  includesKeyword(keyword, role.name),
+)
 
 const protectedRoles = new Set(['admin', 'user'])
 const isProtectedRole = (name: string) => protectedRoles.has(name)
-
-const loadUsers = async () => {
-  usersLoading.value = true
-  usersError.value = ''
-  try {
-    const fetched = await fetchUsers()
-    users.value = fetched.map((item) => {
-      const nextRoles = normalizeRoleNames(item.role, item.roles)
-      return {
-        ...item,
-        role: getPrimaryRole(nextRoles),
-        roles: nextRoles,
-      }
-    })
-  } catch (err) {
-    usersError.value = err instanceof Error ? err.message : '加载失败'
-  } finally {
-    usersLoading.value = false
-  }
-}
-
-const loadRoles = async () => {
-  rolesLoading.value = true
-  rolesError.value = ''
-  try {
-    roles.value = await fetchRoles()
-  } catch (err) {
-    rolesError.value = err instanceof Error ? err.message : '加载失败'
-  } finally {
-    rolesLoading.value = false
-  }
-}
+const isAdminAccount = (account?: string) => String(account || '').trim().toLowerCase() === 'admin'
 
 const handleCreateRole = async () => {
   roleLoading.value = true
@@ -761,477 +735,9 @@ const confirmDeleteRole = async () => {
 
 onMounted(async () => {
   await Promise.all([loadRoles(), loadUsers()])
-  document.addEventListener('click', handleDocumentClick)
 })
 
-onBeforeUnmount(() => {
-  document.removeEventListener('click', handleDocumentClick)
-})
+useDocumentClick(handleDocumentClick)
 </script>
 
-<style scoped>
-.section {
-  display: grid;
-  gap: 16px;
-}
-
-.section-header h2 {
-  font-family: 'Space Grotesk', sans-serif;
-  margin: 0 0 6px;
-  font-size: 24px;
-}
-
-.section-header p {
-  margin: 0;
-  color: #4b5b60;
-}
-
-.panel {
-  background: rgba(255, 255, 255, 0.92);
-  border-radius: 18px;
-  padding: 18px;
-  border: 1px solid rgba(15, 40, 55, 0.18);
-}
-
-.user-panel {
-  display: grid;
-  gap: 16px;
-}
-
-.user-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.search-box {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  border-radius: 14px;
-  border: 1px solid rgba(15, 40, 55, 0.1);
-  background: #fff;
-  min-width: 260px;
-  flex: 1;
-  max-width: 360px;
-}
-
-.filter-box {
-  position: relative;
-}
-
-.filter-trigger {
-  border: none;
-  background: rgba(15, 179, 185, 0.1);
-  color: #0c7e85;
-  font-size: 13px;
-  font-weight: 600;
-  padding: 6px 10px;
-  border-radius: 10px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  white-space: nowrap;
-  flex: 0 0 auto;
-  min-width: 64px;
-  transition: background 0.2s ease, transform 0.2s ease;
-}
-
-.filter-trigger:hover {
-  background: rgba(15, 179, 185, 0.18);
-  transform: translateY(-1px);
-}
-
-.caret {
-  width: 0;
-  height: 0;
-  border-left: 4px solid transparent;
-  border-right: 4px solid transparent;
-  border-top: 5px solid #0c7e85;
-  transition: transform 0.2s ease;
-}
-
-.caret.open {
-  transform: rotate(180deg);
-}
-
-.filter-dropdown {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  min-width: 110px;
-  background: #fff;
-  border: 1px solid rgba(15, 40, 55, 0.18);
-  border-radius: 12px;
-  padding: 6px;
-  display: grid;
-  gap: 4px;
-  box-shadow: 0 12px 24px rgba(15, 40, 55, 0.12);
-  z-index: 40;
-}
-
-.filter-option {
-  border: none;
-  background: transparent;
-  text-align: left;
-  padding: 8px 10px;
-  border-radius: 8px;
-  font-size: 13px;
-  color: #2f3f44;
-  cursor: pointer;
-  transition: background 0.2s ease;
-}
-
-.filter-option:hover {
-  background: rgba(15, 179, 185, 0.12);
-}
-
-.inline-dropdown {
-  position: relative;
-}
-
-.inline-trigger {
-  width: 100%;
-  justify-content: space-between;
-  background: #fff;
-  border: 1px solid #d6e0e2;
-  color: #2f3f44;
-  padding: 6px 10px;
-  border-radius: 12px;
-  font-weight: 500;
-  min-width: 80px;
-}
-
-.inline-trigger:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  background: #f7fafb;
-}
-
-.inline-dropdown-panel {
-  width: 100%;
-  min-width: 0;
-}
-
-.inline-dropdown.drop-up .filter-dropdown {
-  top: auto;
-  bottom: calc(100% + 6px);
-}
-
-.user-form-panel .inline-trigger {
-  height: 40px;
-  min-height: 40px;
-  padding: 0 12px;
-  font-size: 14px;
-  box-sizing: border-box;
-}
-
-.user-form-panel .inline-dropdown {
-  height: 40px;
-}
-
-.search-box input {
-  border: none;
-  outline: none;
-  width: 100%;
-  font-size: 14px;
-}
-
-.slide-fade-enter-active,
-.slide-fade-leave-active {
-  transition: opacity 0.18s ease, transform 0.18s ease;
-}
-
-.slide-fade-enter-from,
-.slide-fade-leave-to {
-  opacity: 0;
-  transform: translateY(-6px);
-}
-
-.toolbar-actions {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.user-form-panel {
-  padding: 14px;
-  border-radius: 16px;
-  background: rgba(15, 179, 185, 0.06);
-  border: 1px dashed rgba(15, 179, 185, 0.2);
-}
-
-.table {
-  display: grid;
-  gap: 8px;
-  overflow-x: auto;
-}
-
-.table-head,
-.table-row {
-  display: grid;
-  grid-template-columns: 40px 120px 140px 120px 200px 120px 120px 180px 180px 270px;
-  align-items: center;
-  gap: 10px;
-  min-width: 1500px;
-}
-
-.table-head {
-  padding: 10px 8px;
-  font-size: 12px;
-  color: #6b7b82;
-  border-bottom: 1px solid rgba(15, 40, 55, 0.08);
-}
-
-.table-body {
-  display: grid;
-  gap: 6px;
-}
-
-.table-row {
-  padding: 12px 8px;
-  border-radius: 12px;
-  background: #fff;
-  border: 1px solid rgba(15, 40, 55, 0.06);
-}
-
-.col {
-  font-size: 13px;
-  color: #314046;
-}
-
-.col-ops {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: nowrap;
-  white-space: nowrap;
-  position: sticky;
-  right: 0;
-  z-index: 3;
-  background: #fff;
-  border-left: 1px solid rgba(15, 40, 55, 0.08);
-  padding-left: 10px;
-}
-
-.table-head .col-ops {
-  z-index: 4;
-  background: rgba(248, 252, 252, 0.98);
-}
-
-.action-control {
-  height: 34px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.form {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 12px;
-}
-
-.field {
-  display: grid;
-  gap: 6px;
-  font-size: 13px;
-  min-width: 0;
-}
-
-.field label {
-  color: #5a6a70;
-}
-
-.field input,
-.field select {
-  border-radius: 12px;
-  border: 1px solid #d6e0e2;
-  padding: 10px 12px;
-  font-size: 14px;
-  height: 40px;
-  box-sizing: border-box;
-}
-
-.primary {
-  border: none;
-  border-radius: 12px;
-  padding: 10px 16px;
-  font-weight: 600;
-  background: linear-gradient(120deg, #0fb3b9, #5ce1e6);
-  color: #fff;
-  cursor: pointer;
-}
-
-.button-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-}
-
-.role-create-form {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
-  align-items: end;
-}
-
-.role-create-form .button-row {
-  flex-wrap: nowrap;
-  align-items: end;
-  align-self: end;
-}
-
-.role-create-form .button-row .primary {
-  height: 40px;
-  padding: 0 16px;
-}
-
-.primary:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.ghost {
-  border: 1px solid rgba(15, 179, 185, 0.4);
-  color: #0c7e85;
-  background: transparent;
-  padding: 10px 16px;
-  border-radius: 12px;
-  cursor: pointer;
-  font-weight: 600;
-}
-
-.ghost:hover {
-  background: rgba(15, 179, 185, 0.08);
-}
-
-.ghost.action-control {
-  padding: 0 14px;
-  height: 34px;
-}
-
-.ghost.danger {
-  border-color: rgba(255, 94, 94, 0.5);
-  color: #b13333;
-}
-
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(8, 18, 22, 0.35);
-  display: grid;
-  place-items: center;
-  z-index: 50;
-}
-
-.modal-card {
-  width: min(420px, 92vw);
-  background: #fff;
-  border-radius: 18px;
-  padding: 18px;
-  box-shadow: 0 18px 50px rgba(15, 40, 55, 0.18);
-  display: grid;
-  gap: 12px;
-}
-
-.modal-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.modal-header h3 {
-  margin: 0;
-  font-size: 18px;
-}
-
-.modal-close {
-  border: none;
-  background: transparent;
-  font-size: 16px;
-  cursor: pointer;
-  color: #6a7a80;
-}
-
-.modal-body {
-  margin: 0;
-  color: #4b5b60;
-  font-size: 14px;
-}
-
-.modal-body code {
-  background: rgba(15, 179, 185, 0.12);
-  color: #0c7e85;
-  padding: 2px 6px;
-  border-radius: 6px;
-}
-
-.modal-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-}
-
-.state {
-  font-size: 13px;
-  color: #5a6a70;
-  margin-top: 8px;
-}
-
-.state.error {
-  color: #b13333;
-}
-
-.state.success {
-  color: #0f6b4f;
-}
-
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 12px;
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid rgba(15, 40, 55, 0.12);
-}
-
-.policy-card {
-  background: rgba(255, 255, 255, 0.9);
-  border-radius: 16px;
-  padding: 14px;
-  border: 1px solid rgba(15, 40, 55, 0.14);
-  display: grid;
-  gap: 8px;
-}
-
-.policy-card h3 {
-  margin: 0 0 4px;
-  font-size: 15px;
-}
-
-.policy-card p {
-  margin: 0;
-  color: #6a7a80;
-  font-size: 12px;
-}
-
-.policy-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-@media (max-width: 900px) {
-  .role-create-form {
-    grid-template-columns: 1fr;
-  }
-
-  .role-create-form .button-row {
-    align-self: auto;
-  }
-}
-</style>
+<style scoped src="./UserRoleModule.css"></style>

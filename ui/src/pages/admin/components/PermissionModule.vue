@@ -201,18 +201,16 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useAdminSubjects } from '../../../composables/use-admin-subjects'
+import { includesKeyword, useSearchableList } from '../../../composables/use-searchable-list'
 import { fetchAgents, type AgentSummary } from '../../../services/agents'
 import { fetchModels, type ModelSummary } from '../../../services/models'
 import {
   fetchAgentGroups,
-  fetchRoles,
   fetchSubjectPermissions,
-  fetchUsers,
   updateSubjectPermissions,
-  type AdminUser,
   type AgentGroup,
   type PermissionSubjectMatrixItem,
-  type Role,
 } from '../../../services/admin'
 
 type PermissionAction = 'view' | 'edit' | 'manage'
@@ -233,16 +231,12 @@ type ScopeItem = {
   subLabel: string
 }
 
-const roles = ref<Role[]>([])
-const users = ref<AdminUser[]>([])
+const { roles, users, usersLoading, usersError, rolesLoading, rolesError, loadUsers, loadRoles } =
+  useAdminSubjects()
 const agents = ref<AgentSummary[]>([])
 const models = ref<ModelSummary[]>([])
 const groups = ref<AgentGroup[]>([])
 
-const usersLoading = ref(false)
-const usersError = ref('')
-const rolesLoading = ref(false)
-const rolesError = ref('')
 const groupsLoading = ref(false)
 const groupsError = ref('')
 const permissionsLoading = ref(false)
@@ -280,22 +274,17 @@ const resourceScopeItems: ScopeItem[] = [
 
 const scopeItems = computed(() => (scopeTab.value === 'menu' ? menuScopeItems : resourceScopeItems))
 
-const filteredSubjects = computed(() => {
-  const query = subjectSearch.value.trim().toLowerCase()
-  if (subjectTab.value === 'user') {
-    if (!query) return users.value
-    return users.value.filter((user) => {
-      const fields = [user.username, user.account, user.email]
-      return fields.some((field) => String(field || '').toLowerCase().includes(query))
-    })
-  }
+const { filtered: filteredUserSubjects } = useSearchableList(users, subjectSearch, (user, keyword) =>
+  includesKeyword(keyword, user.username, user.account, user.email),
+)
 
-  if (!query) return roles.value
-  return roles.value.filter((role) => {
-    const fields = [role.name, role.description]
-    return fields.some((field) => String(field || '').toLowerCase().includes(query))
-  })
-})
+const { filtered: filteredRoleSubjects } = useSearchableList(roles, subjectSearch, (role, keyword) =>
+  includesKeyword(keyword, role.name, role.description),
+)
+
+const filteredSubjects = computed(() =>
+  subjectTab.value === 'user' ? filteredUserSubjects.value : filteredRoleSubjects.value,
+)
 
 const allMenuRows = computed<PermissionRow[]>(() =>
   menuScopeItems
@@ -366,41 +355,11 @@ const tableRows = computed(() => {
   return allResourceRows.value.filter((row) => row.resourceType === selectedScopeId.value)
 })
 
-const filteredRows = computed(() => {
-  const query = tableSearch.value.trim().toLowerCase()
-  if (!query) return tableRows.value
-  return tableRows.value.filter((row) =>
-    [row.label, row.subLabel, row.resourceId]
-      .filter(Boolean)
-      .some((field) => String(field).toLowerCase().includes(query))
-  )
-})
+const { filtered: filteredRows } = useSearchableList(tableRows, tableSearch, (row, keyword) =>
+  includesKeyword(keyword, row.label, row.subLabel, row.resourceId),
+)
 
 const isAdminSubject = computed(() => subjectTab.value === 'role' && selectedSubjectId.value === 'admin')
-
-const loadUsers = async () => {
-  usersLoading.value = true
-  usersError.value = ''
-  try {
-    users.value = await fetchUsers()
-  } catch (err) {
-    usersError.value = err instanceof Error ? err.message : '加载失败'
-  } finally {
-    usersLoading.value = false
-  }
-}
-
-const loadRoles = async () => {
-  rolesLoading.value = true
-  rolesError.value = ''
-  try {
-    roles.value = await fetchRoles()
-  } catch (err) {
-    rolesError.value = err instanceof Error ? err.message : '加载失败'
-  } finally {
-    rolesLoading.value = false
-  }
-}
 
 const loadResources = async () => {
   const [agentsResult, modelsResult] = await Promise.allSettled([
@@ -670,343 +629,4 @@ watch([agents, models, groups], () => {
 })
 </script>
 
-<style scoped>
-.section {
-  display: grid;
-  gap: 16px;
-}
-
-.section-header h2 {
-  font-family: 'Space Grotesk', sans-serif;
-  margin: 0 0 6px;
-  font-size: 24px;
-}
-
-.section-header p {
-  margin: 0;
-  color: #4b5b60;
-}
-
-.panel {
-  background: rgba(255, 255, 255, 0.92);
-  border-radius: 18px;
-  padding: 18px;
-  border: 1px solid rgba(15, 40, 55, 0.18);
-}
-
-.permission-board {
-  display: grid;
-  gap: 16px;
-  grid-template-rows: auto;
-}
-
-.permission-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.tab-group {
-  display: inline-flex;
-  gap: 6px;
-  padding: 4px;
-  border-radius: 12px;
-  background: rgba(15, 179, 185, 0.12);
-}
-
-.tab {
-  border: none;
-  background: transparent;
-  padding: 6px 12px;
-  border-radius: 10px;
-  font-size: 13px;
-  cursor: pointer;
-  color: #4b5b60;
-}
-
-.tab.active {
-  background: #fff;
-  color: #0c7e85;
-  font-weight: 600;
-  box-shadow: 0 8px 18px rgba(15, 40, 55, 0.12);
-}
-
-.primary {
-  border: none;
-  border-radius: 12px;
-  padding: 10px 16px;
-  font-weight: 600;
-  background: linear-gradient(120deg, #0fb3b9, #5ce1e6);
-  color: #fff;
-  cursor: pointer;
-}
-
-.primary:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.state {
-  font-size: 13px;
-  color: #5a6a70;
-  margin-top: 8px;
-}
-
-.state.error {
-  color: #b13333;
-}
-
-.state.success {
-  color: #0f6b4f;
-}
-
-.permission-body {
-  display: grid;
-  grid-template-columns: 180px 180px minmax(0, 1fr);
-  gap: 12px;
-  align-items: start;
-}
-
-.permission-column {
-  background: rgba(255, 255, 255, 0.7);
-  border-radius: 16px;
-  border: 1px solid rgba(15, 40, 55, 0.16);
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-height: 0;
-}
-
-.table-column {
-  background: transparent;
-  border: none;
-  padding: 0;
-  overflow: visible;
-  min-width: 0;
-}
-
-.column-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: #3a4a4f;
-}
-
-.search-box.compact {
-  min-width: 0;
-  max-width: none;
-  padding: 0 10px;
-  height: 34px;
-  align-items: center;
-  flex: 0 0 auto;
-  box-sizing: border-box;
-  border: 1px solid rgba(15, 40, 55, 0.16);
-  box-shadow: none;
-  background: #fff;
-  margin-bottom: 6px;
-  border-radius: 12px;
-}
-
-.search-box.compact input {
-  height: 100%;
-  background: transparent;
-  border: none;
-  outline: none;
-  width: 100%;
-}
-
-.list {
-  display: grid;
-  gap: 8px;
-  overflow-y: auto;
-  padding-right: 4px;
-  flex: 1;
-  min-height: 0;
-}
-
-.list-item {
-  text-align: left;
-  border: 1px solid transparent;
-  background: #fff;
-  padding: 10px 12px;
-  border-radius: 12px;
-  cursor: pointer;
-  display: grid;
-  gap: 4px;
-  box-shadow: 0 6px 14px rgba(15, 40, 55, 0.08);
-  height: 60px;
-}
-
-.list-item.subject-item,
-.list-item.role-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.subject-line {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.subject-account {
-  font-size: 11px;
-  color: #6a7a80;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.list-item strong {
-  font-size: 13px;
-  color: #2e3c41;
-}
-
-.list-item small {
-  font-size: 11px;
-  color: #6a7a80;
-}
-
-.list-item.active {
-  background: rgba(15, 179, 185, 0.16);
-  border-color: rgba(15, 179, 185, 0.45);
-}
-
-.table-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 10px;
-  margin-bottom: 8px;
-}
-
-.table-toolbar input {
-  width: min(100%, 380px);
-  border-radius: 12px;
-  border: 1px solid #d6e0e2;
-  padding: 0 12px;
-  font-size: 14px;
-  height: 34px;
-}
-
-.action-all {
-  display: grid;
-  grid-template-columns: 12px auto;
-  align-items: center;
-  justify-content: flex-start;
-  column-gap: 6px;
-  font-size: 12px;
-  color: #6b7b82;
-  user-select: none;
-  width: 100%;
-}
-
-.action-all input {
-  width: 12px;
-  height: 12px;
-  accent-color: #0fb3b9;
-}
-
-.action-cell {
-  display: grid;
-  grid-template-columns: 12px auto;
-  align-items: center;
-  justify-content: flex-start;
-  column-gap: 6px;
-  font-size: 12px;
-  color: #6b7b82;
-  user-select: none;
-  width: 100%;
-}
-
-.permission-table-wrap {
-  width: 100%;
-}
-
-.permission-table {
-  width: 100%;
-  table-layout: fixed;
-  border-collapse: separate;
-  border-spacing: 0 6px;
-}
-
-.permission-table col.col-resource {
-  width: auto;
-}
-
-.permission-table col.col-perm {
-  width: 110px;
-}
-
-.permission-table thead th {
-  font-size: 12px;
-  color: #6b7b82;
-  font-weight: 600;
-  text-align: left;
-  padding: 10px 8px;
-  border-bottom: 1px solid rgba(15, 40, 55, 0.08);
-}
-
-.permission-table tbody td {
-  padding: 12px 8px;
-  background: #fff;
-  border-top: 1px solid rgba(15, 40, 55, 0.06);
-  border-bottom: 1px solid rgba(15, 40, 55, 0.06);
-}
-
-.permission-table tbody td:first-child {
-  border-left: 1px solid rgba(15, 40, 55, 0.06);
-  border-top-left-radius: 12px;
-  border-bottom-left-radius: 12px;
-}
-
-.permission-table tbody td:last-child {
-  border-right: 1px solid rgba(15, 40, 55, 0.06);
-  border-top-right-radius: 12px;
-  border-bottom-right-radius: 12px;
-}
-
-.permission-table .col-action {
-  text-align: left;
-}
-
-.permission-row input[type='checkbox'] {
-  width: 12px;
-  height: 12px;
-  accent-color: #0fb3b9;
-  margin: 0;
-  vertical-align: middle;
-}
-
-.empty-placeholder {
-  min-height: 24px;
-}
-
-.row-title {
-  font-weight: 600;
-  color: #2f3f44;
-}
-
-.permission-row small {
-  display: block;
-  margin-top: 4px;
-  font-size: 11px;
-  color: #6a7a80;
-}
-
-@media (max-width: 1400px) {
-  .permission-body {
-    grid-template-columns: 160px 160px minmax(0, 1fr);
-  }
-}
-
-@media (max-width: 1100px) {
-  .permission-body {
-    grid-template-columns: 1fr;
-  }
-}
-</style>
+<style scoped src="./PermissionModule.css"></style>
