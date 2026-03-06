@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy import case, func
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -16,11 +17,7 @@ from ..permissions import (
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 
-@router.get("/modules", response_model=list[schemas.ModuleSummary])
-def get_modules(
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> list[schemas.ModuleSummary]:
+def _get_modules_sync(db: Session, current_user: models.User) -> list[schemas.ModuleSummary]:
     if is_super_admin(current_user):
         agent_total, agent_active = db.query(
             func.count(models.Agent.id),
@@ -127,3 +124,11 @@ def get_modules(
             result.append(schemas.ModuleSummary(**item))
 
     return result
+
+
+@router.get("/modules", response_model=list[schemas.ModuleSummary])
+async def get_modules(
+    current_user: models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[schemas.ModuleSummary]:
+    return await db.run_sync(lambda sync_db: _get_modules_sync(sync_db, current_user))

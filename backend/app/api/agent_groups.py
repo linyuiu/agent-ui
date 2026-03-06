@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -18,11 +19,7 @@ def _to_out(group: models.AgentGroup) -> schemas.AgentGroupOut:
     )
 
 
-@router.get("", response_model=list[schemas.AgentGroupOut])
-def list_agent_groups(
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> list[schemas.AgentGroupOut]:
+def _list_agent_groups_sync(db: Session, current_user: models.User) -> list[schemas.AgentGroupOut]:
     require_menu_action(db, current_user, action="view", menu_id="agents")
     groups = db.query(models.AgentGroup).order_by(models.AgentGroup.name.asc()).all()
     if is_super_admin(current_user):
@@ -49,11 +46,10 @@ def list_agent_groups(
     return allowed
 
 
-@router.post("", response_model=schemas.AgentGroupOut, status_code=201)
-def create_agent_group(
+def _create_agent_group_sync(
+    db: Session,
     payload: schemas.AgentGroupCreate,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    current_user: models.User,
 ) -> schemas.AgentGroupOut:
     require_menu_action(db, current_user, action="edit", menu_id="agents")
     name = payload.name.strip()
@@ -80,3 +76,20 @@ def create_agent_group(
     db.commit()
     db.refresh(group)
     return _to_out(group)
+
+
+@router.get("", response_model=list[schemas.AgentGroupOut])
+async def list_agent_groups(
+    current_user: models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[schemas.AgentGroupOut]:
+    return await db.run_sync(lambda sync_db: _list_agent_groups_sync(sync_db, current_user))
+
+
+@router.post("", response_model=schemas.AgentGroupOut, status_code=201)
+async def create_agent_group(
+    payload: schemas.AgentGroupCreate,
+    current_user: models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> schemas.AgentGroupOut:
+    return await db.run_sync(lambda sync_db: _create_agent_group_sync(sync_db, payload, current_user))

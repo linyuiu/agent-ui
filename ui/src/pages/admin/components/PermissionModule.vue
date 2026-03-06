@@ -50,7 +50,7 @@
           <p v-if="subjectTab === 'role' && rolesError" class="state error">{{ rolesError }}</p>
           <div v-if="subjectTab === 'user'" class="list">
             <button
-              v-for="user in filteredSubjects"
+              v-for="user in filteredUserSubjects"
               :key="user.id"
               class="list-item subject-item"
               :class="{ active: selectedSubjectId === String(user.id) }"
@@ -65,7 +65,7 @@
           </div>
           <div v-else class="list">
             <button
-              v-for="role in filteredSubjects"
+              v-for="role in filteredRoleSubjects"
               :key="role.id"
               class="list-item role-item"
               :class="{ active: selectedSubjectId === role.name }"
@@ -211,6 +211,7 @@ import {
   updateSubjectPermissions,
   type AgentGroup,
   type PermissionSubjectMatrixItem,
+  type PermissionSubjectSummary,
 } from '../../../services/admin'
 
 type PermissionAction = 'view' | 'edit' | 'manage'
@@ -281,10 +282,6 @@ const { filtered: filteredUserSubjects } = useSearchableList(users, subjectSearc
 
 const { filtered: filteredRoleSubjects } = useSearchableList(roles, subjectSearch, (role, keyword) =>
   includesKeyword(keyword, role.name, role.description),
-)
-
-const filteredSubjects = computed(() =>
-  subjectTab.value === 'user' ? filteredUserSubjects.value : filteredRoleSubjects.value,
 )
 
 const allMenuRows = computed<PermissionRow[]>(() =>

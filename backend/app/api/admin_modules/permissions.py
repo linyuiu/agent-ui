@@ -1,34 +1,51 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy import or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ... import models, schemas
 from ...auth import get_current_user
 from ...db import get_db
-from ...permissions import ACTION_ORDER, get_user_role_names, is_super_admin
+from ...permissions import (
+    ACTION_ORDER,
+    expand_agent_group_permissions_async,
+    expand_resource_wildcards_async,
+    get_user_role_names_async,
+    is_super_admin,
+    require_manage_menu_async,
+    require_menu_action_async,
+)
 from .common import (
     assert_permission_editable,
     build_permission_items,
     collect_actions,
-    ensure_role_exists,
     expand_actions,
-    expand_agent_group_permissions,
-    expand_resource_wildcards,
-    require_menu_manage,
-    require_menu_view,
 )
 
 router = APIRouter()
 
 
-def _build_subject_permissions_summary(
+def _permission_grant_out(grant: models.PermissionGrant) -> schemas.PermissionGrantOut:
+    return schemas.PermissionGrantOut(
+        id=grant.id,
+        subject_type=grant.subject_type,
+        subject_id=grant.subject_id,
+        scope=grant.scope,
+        resource_type=grant.resource_type,
+        resource_id=grant.resource_id,
+        action=grant.action,
+        created_at=grant.created_at,
+    )
+
+
+async def _build_subject_permissions_summary(
     *,
     subject_type: str,
     subject_id: str,
     scope: str,
     current_user: models.User,
-    db: Session,
+    db: AsyncSession,
 ) -> schemas.PermissionSubjectSummary:
     if subject_type not in {"user", "role"}:
         raise HTTPException(status_code=400, detail="Invalid subject type")
@@ -44,49 +61,39 @@ def _build_subject_permissions_summary(
             user_id = int(subject_id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid user id") from exc
-        user = db.query(models.User).filter(models.User.id == user_id).first()
+        user = await db.get(models.User, user_id)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        role_names = get_user_role_names(db, user)
+
+        role_names = await get_user_role_names_async(db, user)
         role_name = role_names[0] if role_names else None
         if user.account == "admin" and not is_super_admin(current_user):
             read_only = True
 
-        user_grants = (
-            db.query(models.PermissionGrant)
-            .filter(
-                models.PermissionGrant.subject_type == "user",
-                models.PermissionGrant.subject_id == str(user_id),
-                models.PermissionGrant.scope == scope,
-            )
-            .all()
-        )
-        role_grants: list[models.PermissionGrant] = []
+        clause = [
+            (models.PermissionGrant.subject_type == "user")
+            & (models.PermissionGrant.subject_id == str(user_id))
+            & (models.PermissionGrant.scope == scope)
+        ]
         if role_names:
-            role_grants = (
-                db.query(models.PermissionGrant)
-                .filter(
-                    models.PermissionGrant.subject_type == "role",
-                    models.PermissionGrant.subject_id.in_(role_names),
-                    models.PermissionGrant.scope == scope,
-                )
-                .all()
+            clause.append(
+                (models.PermissionGrant.subject_type == "role")
+                & (models.PermissionGrant.subject_id.in_(role_names))
+                & (models.PermissionGrant.scope == scope)
             )
+        grants = (await db.execute(select(models.PermissionGrant).where(or_(*clause)))).scalars().all()
+        user_grants = [grant for grant in grants if grant.subject_type == "user"]
+        role_grants = [grant for grant in grants if grant.subject_type == "role"]
+
         direct_map = collect_actions(user_grants)
         inherited_map = collect_actions(role_grants)
 
         if scope == "resource":
-            direct_map = expand_resource_wildcards(db, direct_map)
-            inherited_map = expand_resource_wildcards(db, inherited_map)
-            direct_map = {
-                key: set(actions)
-                for key, actions in direct_map.items()
-                if key[1] is not None
-            }
+            direct_map = await expand_resource_wildcards_async(db, direct_map)
+            inherited_map = await expand_resource_wildcards_async(db, inherited_map)
+            direct_map = {key: set(actions) for key, actions in direct_map.items() if key[1] is not None}
             inherited_map = {
-                key: set(actions)
-                for key, actions in inherited_map.items()
-                if key[1] is not None
+                key: set(actions) for key, actions in inherited_map.items() if key[1] is not None
             }
 
         effective_map: dict[tuple[str, str | None], set[str]] = {}
@@ -96,8 +103,8 @@ def _build_subject_permissions_summary(
             effective_map.setdefault(key, set()).update(actions)
 
         if scope == "resource":
-            derived_from_direct = expand_agent_group_permissions(db, direct_map)
-            derived_from_inherited = expand_agent_group_permissions(db, inherited_map)
+            derived_from_direct = await expand_agent_group_permissions_async(db, direct_map)
+            derived_from_inherited = await expand_agent_group_permissions_async(db, inherited_map)
             for key, actions in derived_from_direct.items():
                 effective_map.setdefault(key, set()).update(actions)
             for key, actions in derived_from_inherited.items():
@@ -112,33 +119,35 @@ def _build_subject_permissions_summary(
         else:
             items = build_permission_items(effective_map, inherited_map)
     else:
-        role = db.query(models.Role).filter(models.Role.name == subject_id).first()
+        role = (
+            await db.execute(select(models.Role).where(models.Role.name == subject_id))
+        ).scalar_one_or_none()
         if not role:
             raise HTTPException(status_code=404, detail="Role not found")
+
         role_name = subject_id
         role_names = [subject_id]
         if subject_id == "user":
             read_only = True
         elif subject_id == "admin" and not is_super_admin(current_user):
             read_only = True
+
         role_grants = (
-            db.query(models.PermissionGrant)
-            .filter(
-                models.PermissionGrant.subject_type == "role",
-                models.PermissionGrant.subject_id == subject_id,
-                models.PermissionGrant.scope == scope,
+            await db.execute(
+                select(models.PermissionGrant).where(
+                    models.PermissionGrant.subject_type == "role",
+                    models.PermissionGrant.subject_id == subject_id,
+                    models.PermissionGrant.scope == scope,
+                )
             )
-            .all()
-        )
+        ).scalars().all()
         effective_map = collect_actions(role_grants)
         if scope == "resource":
-            effective_map = expand_resource_wildcards(db, effective_map)
+            effective_map = await expand_resource_wildcards_async(db, effective_map)
             effective_map = {
-                key: set(actions)
-                for key, actions in effective_map.items()
-                if key[1] is not None
+                key: set(actions) for key, actions in effective_map.items() if key[1] is not None
             }
-            derived_from_groups = expand_agent_group_permissions(db, effective_map)
+            derived_from_groups = await expand_agent_group_permissions_async(db, effective_map)
             for key, actions in derived_from_groups.items():
                 effective_map.setdefault(key, set()).update(actions)
             items = build_permission_items(effective_map, derived_from_groups)
@@ -160,37 +169,27 @@ def _build_subject_permissions_summary(
 
 
 @router.get("/permissions", response_model=list[schemas.PermissionGrantOut])
-def list_permission_grants(
+async def list_permission_grants(
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> list[schemas.PermissionGrantOut]:
-    require_menu_view(current_user, db, "admin")
-    grants = db.query(models.PermissionGrant).order_by(models.PermissionGrant.id.desc()).all()
-    return [
-        schemas.PermissionGrantOut(
-            id=grant.id,
-            subject_type=grant.subject_type,
-            subject_id=grant.subject_id,
-            scope=grant.scope,
-            resource_type=grant.resource_type,
-            resource_id=grant.resource_id,
-            action=grant.action,
-            created_at=grant.created_at,
-        )
-        for grant in grants
-    ]
+    await require_menu_action_async(db, current_user, action="view", menu_id="admin")
+    grants = (
+        await db.execute(select(models.PermissionGrant).order_by(models.PermissionGrant.id.desc()))
+    ).scalars().all()
+    return [_permission_grant_out(grant) for grant in grants]
 
 
 @router.get("/permissions/subject", response_model=schemas.PermissionSubjectSummary)
-def get_subject_permissions(
+async def get_subject_permissions(
     subject_type: str,
     subject_id: str,
     scope: str,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> schemas.PermissionSubjectSummary:
-    require_menu_view(current_user, db, "admin")
-    return _build_subject_permissions_summary(
+    await require_menu_action_async(db, current_user, action="view", menu_id="admin")
+    return await _build_subject_permissions_summary(
         subject_type=subject_type,
         subject_id=subject_id,
         scope=scope,
@@ -200,12 +199,12 @@ def get_subject_permissions(
 
 
 @router.put("/permissions/subject", response_model=schemas.PermissionSubjectSummary)
-def update_subject_permissions(
+async def update_subject_permissions(
     payload: schemas.PermissionSubjectUpdate,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> schemas.PermissionSubjectSummary:
-    require_menu_manage(current_user, db)
+    await require_manage_menu_async(db, current_user)
     subject_type = payload.subject_type
     subject_id = payload.subject_id
     scope = payload.scope
@@ -215,41 +214,38 @@ def update_subject_permissions(
             user_id = int(subject_id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid user id") from exc
-        user = db.query(models.User).filter(models.User.id == user_id).first()
+        user = await db.get(models.User, user_id)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         assert_permission_editable(current_user, target_user=user)
-        role_names = get_user_role_names(db, user)
-        role_grants: list[models.PermissionGrant] = []
+        role_names = await get_user_role_names_async(db, user)
+        role_grants = []
         if role_names:
             role_grants = (
-                db.query(models.PermissionGrant)
-                .filter(
-                    models.PermissionGrant.subject_type == "role",
-                    models.PermissionGrant.subject_id.in_(role_names),
-                    models.PermissionGrant.scope == scope,
+                await db.execute(
+                    select(models.PermissionGrant).where(
+                        models.PermissionGrant.subject_type == "role",
+                        models.PermissionGrant.subject_id.in_(role_names),
+                        models.PermissionGrant.scope == scope,
+                    )
                 )
-                .all()
-            )
+            ).scalars().all()
         role_map_raw = collect_actions(role_grants)
         if scope == "resource":
-            role_map_raw = expand_resource_wildcards(db, role_map_raw)
+            role_map_raw = await expand_resource_wildcards_async(db, role_map_raw)
             role_map_raw = {
-                key: set(actions)
-                for key, actions in role_map_raw.items()
-                if key[1] is not None
+                key: set(actions) for key, actions in role_map_raw.items() if key[1] is not None
             }
-            role_map_effective = {
-                key: set(actions)
-                for key, actions in role_map_raw.items()
-            }
-            derived_from_role = expand_agent_group_permissions(db, role_map_effective)
+            role_map_effective = {key: set(actions) for key, actions in role_map_raw.items()}
+            derived_from_role = await expand_agent_group_permissions_async(db, role_map_effective)
             for key, actions in derived_from_role.items():
                 role_map_effective.setdefault(key, set()).update(actions)
         else:
             role_map_effective = role_map_raw
     else:
-        role = db.query(models.Role).filter(models.Role.name == subject_id).first()
+        role = (
+            await db.execute(select(models.Role).where(models.Role.name == subject_id))
+        ).scalar_one_or_none()
         if not role:
             raise HTTPException(status_code=404, detail="Role not found")
         assert_permission_editable(current_user, target_role=subject_id)
@@ -274,7 +270,7 @@ def update_subject_permissions(
 
     direct_map: dict[tuple[str, str | None], set[str]] = {}
     group_derived_from_desired = (
-        expand_agent_group_permissions(db, desired_map) if scope == "resource" else {}
+        await expand_agent_group_permissions_async(db, desired_map) if scope == "resource" else {}
     )
 
     for key, actions in desired_map.items():
@@ -294,14 +290,14 @@ def update_subject_permissions(
             direct_map[key] = remaining
 
     existing = (
-        db.query(models.PermissionGrant)
-        .filter(
-            models.PermissionGrant.subject_type == subject_type,
-            models.PermissionGrant.subject_id == subject_id,
-            models.PermissionGrant.scope == scope,
+        await db.execute(
+            select(models.PermissionGrant).where(
+                models.PermissionGrant.subject_type == subject_type,
+                models.PermissionGrant.subject_id == subject_id,
+                models.PermissionGrant.scope == scope,
+            )
         )
-        .all()
-    )
+    ).scalars().all()
     existing_keys = {(grant.resource_type, grant.resource_id, grant.action): grant for grant in existing}
 
     desired_keys: set[tuple[str, str | None, str]] = set()
@@ -311,7 +307,7 @@ def update_subject_permissions(
 
     for key, grant in existing_keys.items():
         if key not in desired_keys:
-            db.delete(grant)
+            await db.delete(grant)
 
     for resource_type, resource_id, action in desired_keys:
         if (resource_type, resource_id, action) in existing_keys:
@@ -327,9 +323,9 @@ def update_subject_permissions(
             )
         )
 
-    db.commit()
+    await db.commit()
 
-    return _build_subject_permissions_summary(
+    return await _build_subject_permissions_summary(
         subject_type=subject_type,
         subject_id=subject_id,
         scope=scope,
@@ -339,12 +335,12 @@ def update_subject_permissions(
 
 
 @router.post("/permissions", response_model=schemas.PermissionGrantOut, status_code=201)
-def create_permission_grant(
+async def create_permission_grant(
     payload: schemas.PermissionGrantCreate,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> schemas.PermissionGrantOut:
-    require_menu_manage(current_user, db)
+    await require_manage_menu_async(db, current_user)
     if payload.scope == "menu" and payload.resource_type != "menu":
         raise HTTPException(status_code=400, detail="Menu scope requires resource_type=menu")
     if payload.scope == "menu" and payload.resource_id not in {"agents", "models", "admin"}:
@@ -354,61 +350,58 @@ def create_permission_grant(
     if payload.scope == "resource" and not payload.resource_id:
         raise HTTPException(status_code=400, detail="Resource scope requires resource_id")
     if payload.resource_type == "agent_group" and payload.resource_id:
-        group = db.query(models.AgentGroup).filter(models.AgentGroup.name == payload.resource_id).first()
+        group = (
+            await db.execute(select(models.AgentGroup).where(models.AgentGroup.name == payload.resource_id))
+        ).scalar_one_or_none()
         if not group:
             raise HTTPException(status_code=404, detail="Agent group not found")
     if payload.subject_type == "role":
-        ensure_role_exists(db, payload.subject_id)
+        role = (
+            await db.execute(select(models.Role.id).where(models.Role.name == payload.subject_id))
+        ).scalar_one_or_none()
+        if role is None:
+            raise HTTPException(status_code=400, detail="Role not found")
         assert_permission_editable(current_user, target_role=payload.subject_id)
     if payload.subject_type == "user":
         try:
             user_id = int(payload.subject_id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid user id") from exc
-        user = db.query(models.User).filter(models.User.id == user_id).first()
+        user = await db.get(models.User, user_id)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         assert_permission_editable(current_user, target_user=user)
 
     existing = (
-        db.query(models.PermissionGrant)
-        .filter(
-            models.PermissionGrant.subject_type == payload.subject_type,
-            models.PermissionGrant.subject_id == payload.subject_id,
-            models.PermissionGrant.scope == payload.scope,
-            models.PermissionGrant.resource_type == payload.resource_type,
-            models.PermissionGrant.resource_id == payload.resource_id,
-            models.PermissionGrant.action == payload.action,
+        await db.execute(
+            select(models.PermissionGrant).where(
+                models.PermissionGrant.subject_type == payload.subject_type,
+                models.PermissionGrant.subject_id == payload.subject_id,
+                models.PermissionGrant.scope == payload.scope,
+                models.PermissionGrant.resource_type == payload.resource_type,
+                models.PermissionGrant.resource_id == payload.resource_id,
+                models.PermissionGrant.action == payload.action,
+            )
         )
-        .first()
-    )
+    ).scalar_one_or_none()
     if existing:
         raise HTTPException(status_code=409, detail="Permission already granted")
 
     grant = models.PermissionGrant(**payload.model_dump())
     db.add(grant)
-    db.commit()
-    db.refresh(grant)
-    return schemas.PermissionGrantOut(
-        id=grant.id,
-        subject_type=grant.subject_type,
-        subject_id=grant.subject_id,
-        scope=grant.scope,
-        resource_type=grant.resource_type,
-        resource_id=grant.resource_id,
-        action=grant.action,
-        created_at=grant.created_at,
-    )
+    await db.commit()
+    await db.refresh(grant)
+    return _permission_grant_out(grant)
 
 
 @router.delete("/permissions/{grant_id}")
-def delete_permission_grant(
+async def delete_permission_grant(
     grant_id: int,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
-    require_menu_manage(current_user, db)
-    grant = db.query(models.PermissionGrant).filter(models.PermissionGrant.id == grant_id).first()
+    await require_manage_menu_async(db, current_user)
+    grant = await db.get(models.PermissionGrant, grant_id)
     if not grant:
         raise HTTPException(status_code=404, detail="Permission grant not found")
     if grant.subject_type == "role":
@@ -419,9 +412,9 @@ def delete_permission_grant(
         except ValueError:
             target_id = None
         if target_id is not None:
-            target_user = db.query(models.User).filter(models.User.id == target_id).first()
+            target_user = await db.get(models.User, target_id)
             if target_user:
                 assert_permission_editable(current_user, target_user=target_user)
-    db.delete(grant)
-    db.commit()
+    await db.delete(grant)
+    await db.commit()
     return {"status": "deleted"}

@@ -3,20 +3,20 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from fastapi import Depends, HTTPException, Request, status
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import get_current_user
 from ..db import get_db
 from ..models import User
-from .permissions import evaluate_permission, require_menu_action
+from .permissions import evaluate_permission_async, require_menu_action_async
 
 
 def require_menu_user(*, action: str, menu_id: str):
-    def _dependency(
+    async def _dependency(
         current_user: User = Depends(get_current_user),
-        db: Session = Depends(get_db),
+        db: AsyncSession = Depends(get_db),
     ) -> User:
-        require_menu_action(db, current_user, action=action, menu_id=menu_id)
+        await require_menu_action_async(db, current_user, action=action, menu_id=menu_id)
         return current_user
 
     return _dependency
@@ -31,10 +31,10 @@ def require_resource_user(
     scope: str = "resource",
     resource_attrs_builder: Callable[[Request], dict] | None = None,
 ):
-    def _dependency(
+    async def _dependency(
         request: Request,
         current_user: User = Depends(get_current_user),
-        db: Session = Depends(get_db),
+        db: AsyncSession = Depends(get_db),
     ) -> User:
         resolved_resource_id = resource_id
         if resolved_resource_id is None and resource_id_param:
@@ -45,7 +45,7 @@ def require_resource_user(
             if resource_attrs_builder is not None
             else None
         )
-        decision = evaluate_permission(
+        decision = await evaluate_permission_async(
             db,
             current_user,
             action=action,
@@ -57,7 +57,7 @@ def require_resource_user(
         if not decision.allowed:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Forbidden",
+                detail="访问需要权限",
             )
         return current_user
 

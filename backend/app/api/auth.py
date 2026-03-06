@@ -1,37 +1,34 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import models, schemas, security
 from ..auth import get_current_user
-from ..permissions import get_user_role_names, summarize_permissions
+from ..permissions import get_user_role_names_async, summarize_permissions_async
 from ..db import get_db
-from ..services.sso import build_user_public
+from ..services.sso import build_user_public_async
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-def _verify_password_safe(plain: str, hashed: str) -> bool:
+async def _verify_password_safe(plain: str, hashed: str) -> bool:
     try:
-        return security.verify_password(plain, hashed)
+        return await security.verify_password_async(plain, hashed)
     except Exception:
         return False
 
 
 @router.post("/register", response_model=schemas.UserPublic, status_code=201)
-def register(payload: schemas.RegisterRequest, db: Session = Depends(get_db)) -> schemas.UserPublic:
+async def register(payload: schemas.RegisterRequest, db: AsyncSession = Depends(get_db)) -> schemas.UserPublic:
     existing = (
-        db.query(models.User)
-        .filter(models.User.account == payload.account)
-        .first()
-    )
+        await db.execute(select(models.User).where(models.User.account == payload.account))
+    ).scalar_one_or_none()
     if existing:
         raise HTTPException(status_code=409, detail="Account already registered")
 
     email_existing = (
-        db.query(models.User)
-        .filter(models.User.email == payload.email)
-        .first()
-    )
+        await db.execute(select(models.User).where(models.User.email == payload.email))
+    ).scalar_one_or_none()
     if email_existing:
         raise HTTPException(status_code=409, detail="Email already registered")
 
@@ -39,29 +36,27 @@ def register(payload: schemas.RegisterRequest, db: Session = Depends(get_db)) ->
         account=payload.account,
         username=payload.username,
         email=payload.email,
-        password_hash=security.hash_password(payload.password),
+        password_hash=await security.hash_password_async(payload.password),
         role="user",
     )
     db.add(user)
-    db.flush()
+    await db.flush()
     db.add(models.UserRole(user_id=user.id, role_name="user"))
-    db.commit()
-    db.refresh(user)
-    roles = get_user_role_names(db, user)
-    user_public = build_user_public(db, user)
+    await db.commit()
+    await db.refresh(user)
+    roles = await get_user_role_names_async(db, user)
+    user_public = await build_user_public_async(db, user)
     user_public.roles = roles
     return user_public
 
 
 @router.post("/login", response_model=schemas.LoginResponse)
-def login(payload: schemas.LoginRequest, db: Session = Depends(get_db)) -> schemas.LoginResponse:
+async def login(payload: schemas.LoginRequest, db: AsyncSession = Depends(get_db)) -> schemas.LoginResponse:
     user = (
-        db.query(models.User)
-        .filter(models.User.account == payload.account)
-        .first()
-    )
+        await db.execute(select(models.User).where(models.User.account == payload.account))
+    ).scalar_one_or_none()
 
-    if not user or not _verify_password_safe(payload.password, user.password_hash):
+    if not user or not await _verify_password_safe(payload.password, user.password_hash):
         if user and user.source != "local":
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -83,35 +78,35 @@ def login(payload: schemas.LoginRequest, db: Session = Depends(get_db)) -> schem
     return schemas.LoginResponse(
         access_token=token,
         token_type="bearer",
-        user=build_user_public(db, user),
+        user=await build_user_public_async(db, user),
     )
 
 
 @router.get("/me", response_model=schemas.UserPublic)
-def me(
+async def me(
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> schemas.UserPublic:
-    return build_user_public(db, current_user)
+    return await build_user_public_async(db, current_user)
 
 
 @router.get("/permissions", response_model=schemas.PermissionSummary)
-def permissions(
+async def permissions(
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> schemas.PermissionSummary:
-    summary = summarize_permissions(db, current_user)
+    summary = await summarize_permissions_async(db, current_user)
     return schemas.PermissionSummary(**summary)
 
 
 @router.post("/password")
-def change_password(
+async def change_password(
     payload: schemas.PasswordChangeRequest,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
-    if not security.verify_password(payload.current_password, current_user.password_hash):
+    if not await security.verify_password_async(payload.current_password, current_user.password_hash):
         raise HTTPException(status_code=400, detail="当前密码不正确")
-    current_user.password_hash = security.hash_password(payload.new_password)
-    db.commit()
+    current_user.password_hash = await security.hash_password_async(payload.new_password)
+    await db.commit()
     return {"status": "ok"}

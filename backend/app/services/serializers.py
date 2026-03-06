@@ -28,6 +28,7 @@ def agent_summary(agent: models.Agent, *, include_description: bool = True) -> s
         editable=editable,
         source_type=agent.source_type or "",
         status_editable_only=is_synced,
+        can_sync_users=bool(is_synced and agent.sync_config_id and agent.external_id),
     )
 
 

@@ -4,29 +4,33 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ... import models, schemas
 from ...auth import get_current_user
 from ...db import get_db
+from ...services.chat_user_sync import create_agent_chat_user_sync_task, sync_task_out
+from ...tasks import enqueue_agent_chat_user_sync
 from .common import (
-    fit2cloud_fetch,
-    get_agent_api_config,
+    fit2cloud_fetch_async,
     mask_token,
-    require_menu_manage,
-    sync_fit2cloud_workspace_agents,
+    sync_fit2cloud_workspace_agents_async,
 )
+from ...permissions import require_manage_menu_async
 
 router = APIRouter()
 
 
 @router.get("/agent-sync-configs", response_model=list[schemas.AgentApiConfigOut])
-def list_agent_api_configs(
+async def list_agent_api_configs(
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> list[schemas.AgentApiConfigOut]:
-    require_menu_manage(current_user, db)
-    configs = db.query(models.AgentApiConfig).order_by(models.AgentApiConfig.created_at.desc()).all()
+    await require_manage_menu_async(db, current_user)
+    configs = (
+        await db.execute(select(models.AgentApiConfig).order_by(models.AgentApiConfig.created_at.desc()))
+    ).scalars().all()
     return [
         schemas.AgentApiConfigOut(
             id=config.id,
@@ -39,12 +43,12 @@ def list_agent_api_configs(
 
 
 @router.post("/agent-sync-configs", response_model=schemas.AgentApiConfigOut, status_code=201)
-def create_agent_api_config(
+async def create_agent_api_config(
     payload: schemas.AgentApiConfigCreate,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> schemas.AgentApiConfigOut:
-    require_menu_manage(current_user, db)
+    await require_manage_menu_async(db, current_user)
     base_url = payload.base_url.strip().rstrip("/")
     token = payload.token.strip()
     if not base_url or not token:
@@ -53,7 +57,7 @@ def create_agent_api_config(
     config = models.AgentApiConfig(base_url=base_url, token=token)
     db.add(config)
     try:
-        db.flush()
+        await db.flush()
         created_at = config.created_at or datetime.now(timezone.utc)
         response = schemas.AgentApiConfigOut(
             id=config.id,
@@ -61,22 +65,22 @@ def create_agent_api_config(
             token_hint=mask_token(config.token),
             created_at=created_at,
         )
-        db.commit()
+        await db.commit()
     except IntegrityError as exc:
-        db.rollback()
+        await db.rollback()
         raise HTTPException(status_code=409, detail="API config already exists") from exc
     return response
 
 
 @router.put("/agent-sync-configs/{config_id}", response_model=schemas.AgentApiConfigOut)
-def update_agent_api_config(
+async def update_agent_api_config(
     config_id: int,
     payload: schemas.AgentApiConfigUpdate,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> schemas.AgentApiConfigOut:
-    require_menu_manage(current_user, db)
-    config = db.query(models.AgentApiConfig).filter(models.AgentApiConfig.id == config_id).first()
+    await require_manage_menu_async(db, current_user)
+    config = await db.get(models.AgentApiConfig, config_id)
     if not config:
         raise HTTPException(status_code=404, detail="Config not found")
     if payload.base_url:
@@ -96,43 +100,42 @@ def update_agent_api_config(
         created_at=config.created_at,
     )
     try:
-        db.commit()
+        await db.commit()
     except IntegrityError as exc:
-        db.rollback()
+        await db.rollback()
         raise HTTPException(status_code=409, detail="API config already exists") from exc
 
     return response
 
 
 @router.delete("/agent-sync-configs/{config_id}")
-def delete_agent_api_config(
+async def delete_agent_api_config(
     config_id: int,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
-    require_menu_manage(current_user, db)
-    config = db.query(models.AgentApiConfig).filter(models.AgentApiConfig.id == config_id).first()
+    await require_manage_menu_async(db, current_user)
+    config = await db.get(models.AgentApiConfig, config_id)
     if not config:
         raise HTTPException(status_code=404, detail="Config not found")
-    db.delete(config)
-    db.commit()
+    await db.delete(config)
+    await db.commit()
     return {"status": "deleted"}
 
 
-@router.get(
-    "/agent-sync-configs/{config_id}/workspaces",
-    response_model=list[schemas.Fit2CloudWorkspace],
-)
-def list_fit2cloud_workspaces(
+@router.get("/agent-sync-configs/{config_id}/workspaces", response_model=list[schemas.Fit2CloudWorkspace])
+async def list_fit2cloud_workspaces(
     config_id: int,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> list[schemas.Fit2CloudWorkspace]:
-    require_menu_manage(current_user, db)
-    config = get_agent_api_config(db, config_id)
+    await require_manage_menu_async(db, current_user)
+    config = await db.get(models.AgentApiConfig, config_id)
+    if not config:
+        raise HTTPException(status_code=404, detail="Config not found")
     base_url = config.base_url.rstrip("/")
     try:
-        workspace_resp = fit2cloud_fetch(base_url, config.token, "/admin/api/workspace")
+        workspace_resp = await fit2cloud_fetch_async(base_url, config.token, "/admin/api/workspace")
     except Exception as exc:
         raise HTTPException(status_code=400, detail="Failed to fetch workspaces") from exc
     workspaces = workspace_resp.get("data") or []
@@ -155,17 +158,23 @@ def list_fit2cloud_workspaces(
     "/agent-sync-configs/{config_id}/workspaces/{workspace_id}/applications",
     response_model=list[schemas.Fit2CloudApplication],
 )
-def list_fit2cloud_applications(
+async def list_fit2cloud_applications(
     config_id: int,
     workspace_id: str,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> list[schemas.Fit2CloudApplication]:
-    require_menu_manage(current_user, db)
-    config = get_agent_api_config(db, config_id)
+    await require_manage_menu_async(db, current_user)
+    config = await db.get(models.AgentApiConfig, config_id)
+    if not config:
+        raise HTTPException(status_code=404, detail="Config not found")
     base_url = config.base_url.rstrip("/")
     try:
-        apps_resp = fit2cloud_fetch(base_url, config.token, f"/admin/api/workspace/{workspace_id}/application")
+        apps_resp = await fit2cloud_fetch_async(
+            base_url,
+            config.token,
+            f"/admin/api/workspace/{workspace_id}/application",
+        )
     except Exception as exc:
         raise HTTPException(status_code=400, detail="Failed to fetch applications") from exc
     apps = apps_resp.get("data") or []
@@ -186,14 +195,16 @@ def list_fit2cloud_applications(
     "/agent-sync-configs/{config_id}/sync",
     response_model=schemas.AgentSyncResponse,
 )
-def sync_fit2cloud_agents_by_config(
+async def sync_fit2cloud_agents_by_config(
     config_id: int,
     payload: schemas.Fit2CloudSyncByConfigRequest,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> schemas.AgentSyncResponse:
-    require_menu_manage(current_user, db)
-    config = get_agent_api_config(db, config_id)
+    await require_manage_menu_async(db, current_user)
+    config = await db.get(models.AgentApiConfig, config_id)
+    if not config:
+        raise HTTPException(status_code=404, detail="Config not found")
     base_url = config.base_url.rstrip("/")
     normalized_workspaces: list[schemas.Fit2CloudWorkspaceSyncItem] = []
     if payload.workspaces:
@@ -213,7 +224,7 @@ def sync_fit2cloud_agents_by_config(
 
     workspace_name_map: dict[str, str] = {}
     try:
-        workspace_resp = fit2cloud_fetch(base_url, config.token, "/admin/api/workspace")
+        workspace_resp = await fit2cloud_fetch_async(base_url, config.token, "/admin/api/workspace")
         workspaces = workspace_resp.get("data") or []
         if isinstance(workspaces, list):
             for item in workspaces:
@@ -229,11 +240,12 @@ def sync_fit2cloud_agents_by_config(
     imported_total = 0
     updated_total = 0
     all_errors: list[str] = []
+    created_tasks: list[models.SyncTask] = []
 
     for workspace_item in normalized_workspaces:
         workspace_id = workspace_item.workspace_id
         try:
-            apps_resp = fit2cloud_fetch(
+            apps_resp = await fit2cloud_fetch_async(
                 base_url,
                 config.token,
                 f"/admin/api/workspace/{workspace_id}/application",
@@ -268,11 +280,12 @@ def sync_fit2cloud_agents_by_config(
             or str(workspace_id)
         )
 
-        imported, updated, errors = sync_fit2cloud_workspace_agents(
+        imported, updated, errors = await sync_fit2cloud_workspace_agents_async(
             db,
             current_user,
             base_url=base_url,
             token=config.token,
+            config_id=config.id,
             workspace_id=str(workspace_id),
             workspace_name=str(workspace_name),
             apps=target_apps,
@@ -281,11 +294,42 @@ def sync_fit2cloud_agents_by_config(
         updated_total += updated
         all_errors.extend(errors)
 
-    db.commit()
+        if payload.sync_chat_users:
+            target_app_ids = [str(item.get("id")) for item in target_apps if item.get("id")]
+            if not target_app_ids:
+                continue
+            synced_agents = (
+                await db.execute(
+                    select(models.Agent).where(
+                        models.Agent.sync_config_id == config.id,
+                        models.Agent.workspace_id == str(workspace_id),
+                        models.Agent.external_id.in_(target_app_ids),
+                    )
+                )
+            ).scalars().all()
+            for agent in synced_agents:
+                task = await create_agent_chat_user_sync_task(
+                    db,
+                    current_user=current_user,
+                    agent=agent,
+                    config_id=config.id,
+                )
+                created_tasks.append(task)
+
+    await db.commit()
+    for task in created_tasks:
+        try:
+            celery_task_id = enqueue_agent_chat_user_sync(task.id)
+            task.celery_task_id = celery_task_id
+        except Exception as exc:  # pragma: no cover - defensive scheduling branch
+            all_errors.append(f"task {task.id}: {exc}")
+    if created_tasks:
+        await db.commit()
     total = imported_total + updated_total
     return schemas.AgentSyncResponse(
         imported=imported_total,
         updated=updated_total,
         total=total,
         errors=all_errors,
+        tasks=[sync_task_out(task) for task in created_tasks],
     )

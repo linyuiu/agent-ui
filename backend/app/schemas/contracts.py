@@ -248,6 +248,77 @@ class AgentApiConfigOut(BaseModel):
     created_at: datetime
 
 
+class ChatUserSummary(BaseModel):
+    id: str
+    username: str
+    email: str = ""
+    phone: str = ""
+    is_active: bool = True
+    nick_name: str = ""
+    source: str = ""
+    create_time: str = ""
+    update_time: str = ""
+    user_group_ids: list[str] = Field(default_factory=list)
+    user_group_names: list[str] = Field(default_factory=list)
+
+
+class ChatUserGroupSummary(BaseModel):
+    id: str
+    name: str
+
+
+class AgentChatUserEntry(BaseModel):
+    id: str
+    username: str
+    email: str = ""
+    phone: str = ""
+    is_active: bool = True
+    nick_name: str = ""
+    source: str = ""
+    create_time: str = ""
+    update_time: str = ""
+    user_group_ids: list[str] = Field(default_factory=list)
+    user_group_names: list[str] = Field(default_factory=list)
+    is_auth: bool = False
+
+
+class AgentChatUserGroupView(BaseModel):
+    id: str
+    name: str
+    users: list[AgentChatUserEntry] = Field(default_factory=list)
+
+
+class AgentChatUserView(BaseModel):
+    agent_id: str
+    groups: list[AgentChatUserGroupView] = Field(default_factory=list)
+    total_users: int = 0
+    last_synced_at: datetime | None = None
+
+
+class SyncTaskOut(BaseModel):
+    id: str
+    task_type: str
+    status: str
+    config_id: int | None = None
+    agent_id: str | None = None
+    agent_name: str = ""
+    workspace_id: str = ""
+    workspace_name: str = ""
+    external_id: str = ""
+    total_steps: int = 0
+    completed_steps: int = 0
+    total_records: int = 0
+    processed_records: int = 0
+    message: str = ""
+    error: str = ""
+    created_by: int | None = None
+    celery_task_id: str = ""
+    created_at: datetime
+    updated_at: datetime | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
 class ModuleSummary(BaseModel):
     id: str
     title: str
@@ -269,6 +340,8 @@ class AgentSummary(BaseModel):
     editable: bool = True
     source_type: str = ""
     status_editable_only: bool = False
+    sync_task_status: str | None = None
+    can_sync_users: bool = False
 
 
 class AgentDetail(AgentSummary):
@@ -285,6 +358,7 @@ class AgentSyncResponse(BaseModel):
     updated: int
     total: int
     errors: list[str] = []
+    tasks: list[SyncTaskOut] = Field(default_factory=list)
 
 
 class Fit2CloudWorkspace(BaseModel):
@@ -310,6 +384,7 @@ class Fit2CloudSyncByConfigRequest(BaseModel):
     application_ids: list[str] | None = None
     sync_all: bool = False
     workspaces: list[Fit2CloudWorkspaceSyncItem] | None = None
+    sync_chat_users: bool = False
 
 
 class AgentUpdate(BaseModel):

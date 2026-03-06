@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -10,11 +11,7 @@ from ..services.serializers import model_detail, model_summary
 router = APIRouter(prefix="/models", tags=["models"])
 
 
-@router.get("", response_model=list[schemas.ModelSummary])
-def list_models(
-    current_user: models.User = Depends(require_menu_user(action="view", menu_id="models")),
-    db: Session = Depends(get_db),
-) -> list[schemas.ModelSummary]:
+def _list_models_sync(db: Session, current_user: models.User) -> list[schemas.ModelSummary]:
     models_list = db.query(models.Model).all()
 
     if is_super_admin(current_user):
@@ -29,12 +26,7 @@ def list_models(
     return allowed
 
 
-@router.get("/{model_id}", response_model=schemas.ModelDetail)
-def get_model(
-    model_id: str,
-    current_user: models.User = Depends(require_menu_user(action="view", menu_id="models")),
-    db: Session = Depends(get_db),
-) -> schemas.ModelDetail:
+def _get_model_sync(db: Session, model_id: str, current_user: models.User) -> schemas.ModelDetail:
     model = db.query(models.Model).filter(models.Model.id == model_id).first()
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
@@ -45,3 +37,20 @@ def get_model(
             raise HTTPException(status_code=403, detail="Forbidden")
 
     return model_detail(model)
+
+
+@router.get("", response_model=list[schemas.ModelSummary])
+async def list_models(
+    current_user: models.User = Depends(require_menu_user(action="view", menu_id="models")),
+    db: AsyncSession = Depends(get_db),
+) -> list[schemas.ModelSummary]:
+    return await db.run_sync(lambda sync_db: _list_models_sync(sync_db, current_user))
+
+
+@router.get("/{model_id}", response_model=schemas.ModelDetail)
+async def get_model(
+    model_id: str,
+    current_user: models.User = Depends(require_menu_user(action="view", menu_id="models")),
+    db: AsyncSession = Depends(get_db),
+) -> schemas.ModelDetail:
+    return await db.run_sync(lambda sync_db: _get_model_sync(sync_db, model_id, current_user))

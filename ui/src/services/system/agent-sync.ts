@@ -9,6 +9,7 @@ import type {
   Fit2CloudSyncByConfigRequest,
   Fit2CloudSyncResponse,
   Fit2CloudWorkspace,
+  SyncTask,
 } from './types'
 
 export const importAgents = (payload: AgentImportRequest) =>
@@ -33,3 +34,8 @@ export const fetchFit2CloudApplications = (configId: number, workspaceId: string
 
 export const syncFit2CloudByConfig = (configId: number, payload: Fit2CloudSyncByConfigRequest) =>
   apiPost<Fit2CloudSyncResponse>(`/admin/agent-sync-configs/${configId}/sync`, payload)
+
+export const fetchAgentSyncTasks = () => apiGet<SyncTask[]>('/admin/agent-sync-tasks')
+
+export const syncAgentChatUsers = (agentId: string) =>
+  apiPost<SyncTask>(`/admin/agents/${encodeURIComponent(agentId)}/sync-chat-users`)

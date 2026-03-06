@@ -3,10 +3,11 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from fastapi import HTTPException, status
-from sqlalchemy import or_
+from sqlalchemy import or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
-from ..models import PermissionGrant, User, UserRole
+from ..models import Agent, AgentGroup, Model, PermissionGrant, User, UserRole
 from .engine import (
     ACTION_BITS,
     ACTION_ORDER,
@@ -21,6 +22,13 @@ from .engine import (
 MENU_IDS = {"agents", "models", "admin"}
 RESOURCE_TYPES = {"agent", "model", "agent_group"}
 SUPER_ADMIN_ACCOUNT = "admin"
+
+
+def _session_info(db: Session | AsyncSession) -> dict:
+    info = getattr(db, "info", None)
+    if info is not None:
+        return info
+    return db.sync_session.info
 
 def is_super_admin(user: User) -> bool:
     return (user.account or "").strip() == SUPER_ADMIN_ACCOUNT
@@ -40,7 +48,7 @@ def _normalize_role_names(items: Iterable[str]) -> list[str]:
 
 def get_user_role_names(db: Session, user: User) -> list[str]:
     cache_key = f"user_roles:{user.id}"
-    cached = db.info.get(cache_key)
+    cached = _session_info(db).get(cache_key)
     if cached is not None:
         return cached
 
@@ -55,7 +63,30 @@ def get_user_role_names(db: Session, user: User) -> list[str]:
         fallback = (user.role or "user").strip() or "user"
         role_names = [fallback]
 
-    db.info[cache_key] = role_names
+    _session_info(db)[cache_key] = role_names
+    return role_names
+
+
+async def get_user_role_names_async(db: AsyncSession, user: User) -> list[str]:
+    cache_key = f"user_roles:{user.id}"
+    info = _session_info(db)
+    cached = info.get(cache_key)
+    if cached is not None:
+        return cached
+
+    rows = (
+        await db.execute(
+            select(UserRole.role_name)
+            .where(UserRole.user_id == user.id)
+            .order_by(UserRole.role_name.asc())
+        )
+    ).all()
+    role_names = _normalize_role_names(name for (name,) in rows)
+    if not role_names:
+        fallback = (user.role or "user").strip() or "user"
+        role_names = [fallback]
+
+    info[cache_key] = role_names
     return role_names
 
 
@@ -204,7 +235,7 @@ def get_user_grants(db: Session, user: User) -> list[PermissionGrant]:
     role_names = get_user_role_names(db, user)
     role_key = ",".join(sorted(role_names))
     cache_key = f"perm_grants:{user.id}:{role_key}"
-    cached = db.info.get(cache_key)
+    cached = _session_info(db).get(cache_key)
     if cached is not None:
         return cached
 
@@ -215,7 +246,27 @@ def get_user_grants(db: Session, user: User) -> list[PermissionGrant]:
         PermissionGrant.subject_id.in_(role_names)
     )
     grants = db.query(PermissionGrant).filter(or_(user_clause, role_clause)).all()
-    db.info[cache_key] = grants
+    _session_info(db)[cache_key] = grants
+    return grants
+
+
+async def get_user_grants_async(db: AsyncSession, user: User) -> list[PermissionGrant]:
+    role_names = await get_user_role_names_async(db, user)
+    role_key = ",".join(sorted(role_names))
+    cache_key = f"perm_grants:{user.id}:{role_key}"
+    info = _session_info(db)
+    cached = info.get(cache_key)
+    if cached is not None:
+        return cached
+
+    user_clause = (PermissionGrant.subject_type == "user") & (
+        PermissionGrant.subject_id == str(user.id)
+    )
+    role_clause = (PermissionGrant.subject_type == "role") & (
+        PermissionGrant.subject_id.in_(role_names)
+    )
+    grants = (await db.execute(select(PermissionGrant).where(or_(user_clause, role_clause)))).scalars().all()
+    info[cache_key] = grants
     return grants
 
 
@@ -226,13 +277,31 @@ def get_user_access(db: Session, user: User) -> PermissionAccess:
     role_names = get_user_role_names(db, user)
     role_key = ",".join(sorted(role_names))
     cache_key = f"perm_access:{user.id}:{role_key}"
-    cached = db.info.get(cache_key)
+    cached = _session_info(db).get(cache_key)
     if cached is not None:
         return cached
 
     grants = get_user_grants(db, user)
     access = _build_access_map(grants)
-    db.info[cache_key] = access
+    _session_info(db)[cache_key] = access
+    return access
+
+
+async def get_user_access_async(db: AsyncSession, user: User) -> PermissionAccess:
+    if is_super_admin(user):
+        return {}
+
+    role_names = await get_user_role_names_async(db, user)
+    role_key = ",".join(sorted(role_names))
+    cache_key = f"perm_access:{user.id}:{role_key}"
+    info = _session_info(db)
+    cached = info.get(cache_key)
+    if cached is not None:
+        return cached
+
+    grants = await get_user_grants_async(db, user)
+    access = _build_access_map(grants)
+    info[cache_key] = access
     return access
 
 
@@ -266,6 +335,36 @@ def evaluate_permission(
     )
 
 
+async def evaluate_permission_async(
+    db: AsyncSession,
+    user: User,
+    *,
+    action: str,
+    scope: str,
+    resource_type: str,
+    resource_id: str | None = None,
+    resource_attrs: dict | None = None,
+    subject_attrs: dict | None = None,
+) -> PermissionDecision:
+    request = PermissionRequest(
+        action=action,
+        scope=scope,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        subject_id=str(user.id),
+        subject_roles=tuple(await get_user_role_names_async(db, user)),
+        subject_attrs=subject_attrs or {},
+        resource_attrs=resource_attrs or {},
+    )
+    engine = get_permission_engine()
+    return engine.evaluate(
+        request=request,
+        grants=await get_user_grants_async(db, user),
+        access=await get_user_access_async(db, user),
+        super_admin=is_super_admin(user),
+    )
+
+
 def has_permission(
     db: Session,
     user: User,
@@ -276,6 +375,26 @@ def has_permission(
     resource_id: str | None = None,
 ) -> bool:
     decision = evaluate_permission(
+        db,
+        user,
+        action=action,
+        scope=scope,
+        resource_type=resource_type,
+        resource_id=resource_id,
+    )
+    return decision.allowed
+
+
+async def has_permission_async(
+    db: AsyncSession,
+    user: User,
+    *,
+    action: str,
+    scope: str,
+    resource_type: str,
+    resource_id: str | None = None,
+) -> bool:
+    decision = await evaluate_permission_async(
         db,
         user,
         action=action,
@@ -306,7 +425,7 @@ def require_permission(
     if not decision.allowed:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Forbidden",
+            detail="访问需要权限",
         )
 
 
@@ -332,8 +451,41 @@ def require_menu_action(db: Session, user: User, *, action: str, menu_id: str) -
     ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Forbidden",
+            detail="访问需要权限",
         )
+
+
+async def require_menu_action_async(
+    db: AsyncSession,
+    user: User,
+    *,
+    action: str,
+    menu_id: str,
+) -> None:
+    if is_super_admin(user):
+        return
+    if menu_id not in MENU_IDS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid menu",
+        )
+    decision = await evaluate_permission_async(
+        db,
+        user,
+        action=action,
+        scope="menu",
+        resource_type="menu",
+        resource_id=menu_id,
+    )
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="访问需要权限",
+        )
+
+
+async def require_manage_menu_async(db: AsyncSession, user: User) -> None:
+    await require_menu_action_async(db, user, action="manage", menu_id="admin")
 
 
 def summarize_permissions(db: Session, user: User) -> dict:
@@ -378,6 +530,137 @@ def summarize_permissions(db: Session, user: User) -> dict:
         )
 
     return {"menus": menus, "resources": resources}
+
+
+async def summarize_permissions_async(db: AsyncSession, user: User) -> dict:
+    if is_super_admin(user):
+        return {
+            "menus": [
+                {"menu_id": menu_id, "actions": ["view", "edit", "manage"]}
+                for menu_id in sorted(MENU_IDS)
+            ],
+            "resources": [
+                {
+                    "resource_type": resource_type,
+                    "resource_id": None,
+                    "actions": ["view", "edit", "manage"],
+                }
+                for resource_type in sorted(RESOURCE_TYPES)
+            ],
+        }
+
+    access = await get_user_access_async(db, user)
+
+    menus: list[dict] = []
+    for menu_id in sorted(MENU_IDS):
+        specific_key = ("menu", "menu", menu_id)
+        wildcard_key = ("menu", "menu", None)
+        mask = access.get(specific_key, 0) | access.get(wildcard_key, 0)
+        if mask:
+            menus.append({"menu_id": menu_id, "actions": _mask_to_actions(mask)})
+
+    resources: list[dict] = []
+    for (scope, resource_type, resource_id), mask in sorted(
+        access.items(), key=lambda item: (item[0][1], item[0][2] or "")
+    ):
+        if scope != "resource" or resource_type not in RESOURCE_TYPES or not mask:
+            continue
+        resources.append(
+            {
+                "resource_type": resource_type,
+                "resource_id": resource_id,
+                "actions": _mask_to_actions(mask),
+            }
+        )
+
+    return {"menus": menus, "resources": resources}
+
+
+async def _resource_ids_async(db: AsyncSession, resource_type: str) -> list[str]:
+    cache_key = f"resource_ids:{resource_type}"
+    info = _session_info(db)
+    cached = info.get(cache_key)
+    if cached is not None:
+        return cached
+
+    if resource_type == "agent":
+        rows = (await db.execute(select(Agent.id))).scalars().all()
+    elif resource_type == "model":
+        rows = (await db.execute(select(Model.id))).scalars().all()
+    elif resource_type == "agent_group":
+        rows = (await db.execute(select(AgentGroup.name))).scalars().all()
+    else:
+        rows = []
+    values = [str(item) for item in rows if item]
+    info[cache_key] = values
+    return values
+
+
+async def _agent_group_map_async(db: AsyncSession) -> list[tuple[str, list[str]]]:
+    cache_key = "agent_group_map"
+    info = _session_info(db)
+    cached = info.get(cache_key)
+    if cached is not None:
+        return cached
+
+    rows = (await db.execute(select(Agent.id, Agent.groups, Agent.group_name))).all()
+    result: list[tuple[str, list[str]]] = []
+    for agent_id, groups, group_name in rows:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in list(groups or []) + ([group_name] if group_name else []):
+            name = str(item or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            normalized.append(name)
+        result.append((str(agent_id), normalized))
+    info[cache_key] = result
+    return result
+
+
+async def expand_resource_wildcards_async(
+    db: AsyncSession,
+    action_map: dict[tuple[str, str | None], set[str]],
+) -> dict[tuple[str, str | None], set[str]]:
+    expanded: dict[tuple[str, str | None], set[str]] = {
+        key: set(actions) for key, actions in action_map.items()
+    }
+    for resource_type in ("agent", "model", "agent_group"):
+        wildcard_actions = expanded.pop((resource_type, None), None)
+        if not wildcard_actions:
+            continue
+        ids = await _resource_ids_async(db, resource_type)
+        if not ids:
+            expanded[(resource_type, None)] = set(wildcard_actions)
+            continue
+        for resource_id in ids:
+            expanded.setdefault((resource_type, resource_id), set()).update(wildcard_actions)
+    return expanded
+
+
+async def expand_agent_group_permissions_async(
+    db: AsyncSession,
+    action_map: dict[tuple[str, str | None], set[str]],
+) -> dict[tuple[str, str | None], set[str]]:
+    group_actions: dict[str | None, set[str]] = {}
+    for (resource_type, resource_id), actions in action_map.items():
+        if resource_type == "agent_group":
+            group_actions[resource_id] = set(actions)
+
+    if not group_actions:
+        return {}
+
+    all_group_actions = group_actions.get(None, set())
+    derived: dict[tuple[str, str | None], set[str]] = {}
+    for agent_id, groups in await _agent_group_map_async(db):
+        actions_for_agent: set[str] = set(all_group_actions)
+        for group in groups:
+            if group in group_actions:
+                actions_for_agent.update(group_actions[group])
+        if actions_for_agent:
+            derived[("agent", agent_id)] = actions_for_agent
+    return derived
 
 
 def _sorted_actions(actions: set[str]) -> list[str]:

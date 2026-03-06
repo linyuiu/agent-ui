@@ -4,11 +4,14 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from ... import models, schemas
 from ...auth import get_current_user
 from ...db import get_db
+from ...permissions import require_manage_menu_async, require_menu_action_async
 from ...services.sso import (
     SSO_PROTOCOLS,
     build_provider_out,
@@ -17,7 +20,6 @@ from ...services.sso import (
     normalize_provider_key,
     normalize_protocol,
 )
-from .common import ensure_role_exists, require_menu_manage, require_menu_view
 
 router = APIRouter(prefix="/sso/providers", tags=["admin_sso"])
 _SENSITIVE_KEYWORDS = ("secret", "password", "token", "apikey", "api_key", "private", "credential")
@@ -48,9 +50,8 @@ def _validate_protocol_config(protocol: str, config: dict) -> None:
             raise HTTPException(status_code=400, detail="OIDC/OAuth2 配置缺少 client_id")
         return
 
-    if protocol == "saml2":
-        if not str(config.get("sso_url") or "").strip():
-            raise HTTPException(status_code=400, detail="SAML2 配置缺少 sso_url")
+    if protocol == "saml2" and not str(config.get("sso_url") or "").strip():
+        raise HTTPException(status_code=400, detail="SAML2 配置缺少 sso_url")
 
 
 def _merge_sensitive_config(current: dict, incoming: dict) -> dict:
@@ -67,32 +68,38 @@ def _merge_sensitive_config(current: dict, incoming: dict) -> dict:
     return merged
 
 
-def _test_protocol_connection(protocol: str, config: dict) -> str:
+def _test_ldap_connection_sync(config: dict) -> str:
+    try:
+        from ldap3 import ALL, Connection, Server  # type: ignore
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=503, detail="LDAP 依赖缺失，请安装 ldap3") from exc
+
+    try:
+        server = Server(str(config.get("server_url") or "").strip(), get_info=ALL)
+        bind_dn = str(config.get("bind_dn") or "").strip()
+        bind_password = str(config.get("bind_password") or "").strip()
+        if bind_dn:
+            conn = Connection(server, user=bind_dn, password=bind_password, auto_bind=True)
+        else:
+            conn = Connection(server, auto_bind=True)
+        conn.unbind()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"LDAP 连接测试失败: {exc}") from exc
+    return "LDAP 连接成功"
+
+
+async def _test_protocol_connection(protocol: str, config: dict) -> str:
     if protocol == "ldap":
-        try:
-            from ldap3 import ALL, Connection, Server  # type: ignore
-        except Exception as exc:  # pragma: no cover - dependency/runtime specific
-            raise HTTPException(status_code=503, detail="LDAP 依赖缺失，请安装 ldap3") from exc
-        try:
-            server = Server(str(config.get("server_url") or "").strip(), get_info=ALL)
-            bind_dn = str(config.get("bind_dn") or "").strip()
-            bind_password = str(config.get("bind_password") or "").strip()
-            if bind_dn:
-                conn = Connection(server, user=bind_dn, password=bind_password, auto_bind=True)
-            else:
-                conn = Connection(server, auto_bind=True)
-            conn.unbind()
-        except HTTPException:
-            raise
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"LDAP 连接测试失败: {exc}") from exc
-        return "LDAP 连接成功"
+        return await run_in_threadpool(_test_ldap_connection_sync, config)
 
     if protocol == "cas":
         cas_base = str(config.get("cas_base_url") or "").strip().rstrip("/")
         probe_url = str(config.get("login_url") or (f"{cas_base}/login" if cas_base else "")).strip()
         try:
-            resp = httpx.get(probe_url, follow_redirects=False, timeout=10.0)
+            async with httpx.AsyncClient(follow_redirects=False, timeout=10.0) as client:
+                resp = await client.get(probe_url)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"CAS 连接测试失败: {exc}") from exc
         if resp.status_code >= 500:
@@ -106,7 +113,8 @@ def _test_protocol_connection(protocol: str, config: dict) -> str:
             discovery_url = f"{issuer}/.well-known/openid-configuration"
         if discovery_url:
             try:
-                payload = httpx.get(discovery_url, timeout=10.0).json()
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    payload = (await client.get(discovery_url)).json()
             except Exception as exc:
                 raise HTTPException(status_code=400, detail=f"OIDC/OAuth2 discovery 测试失败: {exc}") from exc
             if not isinstance(payload, dict):
@@ -134,52 +142,62 @@ def _test_protocol_connection(protocol: str, config: dict) -> str:
 
 
 @router.get("/protocols")
-def list_sso_protocols(
+async def list_sso_protocols(
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
-    require_menu_view(current_user, db, "admin")
+    await require_menu_action_async(db, current_user, action="view", menu_id="admin")
     return {"protocols": sorted(SSO_PROTOCOLS)}
 
 
 @router.get("", response_model=list[schemas.SsoProviderOut])
-def list_sso_providers(
+async def list_sso_providers(
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> list[schemas.SsoProviderOut]:
-    require_menu_view(current_user, db, "admin")
-    rows = db.query(models.AuthProviderConfig).order_by(models.AuthProviderConfig.id.asc()).all()
+    await require_menu_action_async(db, current_user, action="view", menu_id="admin")
+    rows = (
+        await db.execute(select(models.AuthProviderConfig).order_by(models.AuthProviderConfig.id.asc()))
+    ).scalars().all()
     return [build_provider_out(row) for row in rows]
 
 
 @router.post("/test", response_model=schemas.SsoProviderTestResponse)
-def test_sso_provider(
+async def test_sso_provider(
     payload: schemas.SsoProviderTestRequest,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> schemas.SsoProviderTestResponse:
-    require_menu_manage(current_user, db)
+    await require_manage_menu_async(db, current_user)
     protocol = normalize_protocol(payload.protocol)
     config = normalize_config(payload.config)
     _validate_protocol_config(protocol, config)
-    message = _test_protocol_connection(protocol, config)
+    message = await _test_protocol_connection(protocol, config)
     return schemas.SsoProviderTestResponse(status="ok", message=message)
 
 
 @router.post("", response_model=schemas.SsoProviderOut, status_code=201)
-def create_sso_provider(
+async def create_sso_provider(
     payload: schemas.SsoProviderCreate,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> schemas.SsoProviderOut:
-    require_menu_manage(current_user, db)
+    await require_manage_menu_async(db, current_user)
     protocol = normalize_protocol(payload.protocol)
     key = normalize_provider_key(payload.key)
     if not key:
         raise HTTPException(status_code=400, detail="provider key 不合法")
-    if db.query(models.AuthProviderConfig).filter(models.AuthProviderConfig.key == key).first():
+    existing = (
+        await db.execute(select(models.AuthProviderConfig.id).where(models.AuthProviderConfig.key == key))
+    ).scalar_one_or_none()
+    if existing is not None:
         raise HTTPException(status_code=409, detail="provider key 已存在")
-    ensure_role_exists(db, payload.default_role or "user")
+    role = (
+        await db.execute(select(models.Role.id).where(models.Role.name == (payload.default_role or "user")))
+    ).scalar_one_or_none()
+    if role is None:
+        raise HTTPException(status_code=400, detail="Role not found")
+
     config = normalize_config(payload.config)
     _validate_protocol_config(protocol, config)
 
@@ -195,20 +213,20 @@ def create_sso_provider(
         attribute_mapping=normalize_mapping(payload.attribute_mapping),
     )
     db.add(provider)
-    db.commit()
-    db.refresh(provider)
+    await db.commit()
+    await db.refresh(provider)
     return build_provider_out(provider)
 
 
 @router.put("/{provider_id}", response_model=schemas.SsoProviderOut)
-def update_sso_provider(
+async def update_sso_provider(
     provider_id: int,
     payload: schemas.SsoProviderUpdate,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> schemas.SsoProviderOut:
-    require_menu_manage(current_user, db)
-    provider = db.query(models.AuthProviderConfig).filter(models.AuthProviderConfig.id == provider_id).first()
+    await require_manage_menu_async(db, current_user)
+    provider = await db.get(models.AuthProviderConfig, provider_id)
     if not provider:
         raise HTTPException(status_code=404, detail="provider 不存在")
 
@@ -217,11 +235,14 @@ def update_sso_provider(
         if not key:
             raise HTTPException(status_code=400, detail="provider key 不合法")
         existing = (
-            db.query(models.AuthProviderConfig)
-            .filter(models.AuthProviderConfig.key == key, models.AuthProviderConfig.id != provider_id)
-            .first()
-        )
-        if existing:
+            await db.execute(
+                select(models.AuthProviderConfig.id).where(
+                    models.AuthProviderConfig.key == key,
+                    models.AuthProviderConfig.id != provider_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
             raise HTTPException(status_code=409, detail="provider key 已存在")
         provider.key = key
 
@@ -234,7 +255,11 @@ def update_sso_provider(
     if payload.auto_create_user is not None:
         provider.auto_create_user = bool(payload.auto_create_user)
     if payload.default_role is not None:
-        ensure_role_exists(db, payload.default_role or "user")
+        role = (
+            await db.execute(select(models.Role.id).where(models.Role.name == (payload.default_role or "user")))
+        ).scalar_one_or_none()
+        if role is None:
+            raise HTTPException(status_code=400, detail="Role not found")
         provider.default_role = (payload.default_role or "user").strip() or "user"
     if payload.default_workspace is not None:
         provider.default_workspace = (payload.default_workspace or "default").strip() or "default"
@@ -245,21 +270,21 @@ def update_sso_provider(
 
     _validate_protocol_config(provider.protocol, dict(provider.config or {}))
 
-    db.commit()
-    db.refresh(provider)
+    await db.commit()
+    await db.refresh(provider)
     return build_provider_out(provider)
 
 
 @router.delete("/{provider_id}")
-def delete_sso_provider(
+async def delete_sso_provider(
     provider_id: int,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
-    require_menu_manage(current_user, db)
-    provider = db.query(models.AuthProviderConfig).filter(models.AuthProviderConfig.id == provider_id).first()
+    await require_manage_menu_async(db, current_user)
+    provider = await db.get(models.AuthProviderConfig, provider_id)
     if not provider:
         raise HTTPException(status_code=404, detail="provider 不存在")
-    db.delete(provider)
-    db.commit()
+    await db.delete(provider)
+    await db.commit()
     return {"status": "deleted"}

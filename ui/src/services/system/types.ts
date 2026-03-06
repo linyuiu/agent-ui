@@ -195,11 +195,44 @@ export type Fit2CloudApplication = {
   name: string
 }
 
-export type Fit2CloudSyncByConfigRequest = {
+export type Fit2CloudWorkspaceSyncItem = {
   workspace_id: string
   workspace_name?: string
   application_ids?: string[]
   sync_all?: boolean
+}
+
+export type Fit2CloudSyncByConfigRequest = {
+  workspace_id?: string
+  workspace_name?: string
+  application_ids?: string[]
+  sync_all?: boolean
+  workspaces?: Fit2CloudWorkspaceSyncItem[]
+  sync_chat_users?: boolean
+}
+
+export type SyncTask = {
+  id: string
+  task_type: string
+  status: string
+  config_id?: number | null
+  agent_id?: string | null
+  agent_name: string
+  workspace_id: string
+  workspace_name: string
+  external_id: string
+  total_steps: number
+  completed_steps: number
+  total_records: number
+  processed_records: number
+  message: string
+  error: string
+  created_by?: number | null
+  celery_task_id: string
+  created_at: string
+  updated_at?: string | null
+  started_at?: string | null
+  finished_at?: string | null
 }
 
 export type { Fit2CloudSyncResponse }

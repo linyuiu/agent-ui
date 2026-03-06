@@ -8,6 +8,9 @@
       <p class="modal-body">{{ message }}</p>
       <div class="modal-actions">
         <button class="ghost" type="button" @click="$emit('close')">{{ cancelText }}</button>
+        <button v-if="secondaryText" class="ghost" type="button" @click="$emit('secondary')">
+          {{ secondaryText }}
+        </button>
         <button class="primary" type="button" :disabled="loading" @click="$emit('confirm')">
           {{ loading ? loadingText : confirmText }}
         </button>
@@ -25,18 +28,21 @@ withDefaults(
     loading?: boolean
     confirmText?: string
     cancelText?: string
+    secondaryText?: string
     loadingText?: string
   }>(),
   {
     loading: false,
     confirmText: '确认',
     cancelText: '取消',
+    secondaryText: '',
     loadingText: '处理中...',
   }
 )
 
 defineEmits<{
   (event: 'close'): void
+  (event: 'secondary'): void
   (event: 'confirm'): void
 }>()
 </script>

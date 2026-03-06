@@ -12,22 +12,28 @@
       </header>
 
       <form class="form" @submit.prevent="handleSubmit">
-        <label class="field">
-          <span>登录方式</span>
-          <select v-model="passwordProviderKey">
-            <option value="">本地账号</option>
-            <option v-for="provider in passwordProviders" :key="provider.key" :value="provider.key">
-              {{ provider.name }} ({{ provider.protocol }})
-            </option>
-          </select>
-        </label>
+        <div class="form-title-row">
+          <h2 class="form-title">账号登录</h2>
+          <button
+            v-if="selectedPasswordProvider"
+            class="ghost switch-btn"
+            type="button"
+            @click="resetToLocalLogin"
+          >
+            切换为本地登录
+          </button>
+        </div>
+
+        <p v-if="selectedPasswordProvider" class="provider-hint">
+          当前使用 {{ selectedPasswordProvider.name }} 登录
+        </p>
 
         <label class="field">
           <span>账号</span>
           <input
             v-model="account"
             type="text"
-            placeholder="demo"
+            placeholder="账号/邮箱"
             autocomplete="username"
             required
           />
@@ -115,21 +121,24 @@
 
       <p v-if="error" class="notice notice--error">{{ error }}</p>
 
-      <div v-if="redirectProviders.length" class="sso-block">
-        <p class="sso-title">单点登录</p>
+      <div v-if="otherProviders.length" class="sso-block">
+        <div class="sso-divider">
+          <span>其他登录方式</span>
+        </div>
         <div class="sso-actions">
           <button
-            v-for="provider in redirectProviders"
+            v-for="provider in otherProviders"
             :key="provider.key"
             class="ghost sso-btn"
+            :class="{ active: selectedPasswordProvider?.key === provider.key }"
             type="button"
-            @click="handleRedirectSso(provider.key)"
+            :title="provider.name"
+            @click="handleProviderShortcut(provider)"
           >
-            {{ provider.name }}
+            {{ providerShortcutLabel(provider) }}
           </button>
         </div>
       </div>
-
     </main>
   </div>
 </template>
@@ -162,11 +171,25 @@ const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
 const redirectProviders = computed(() => ssoProviders.value.filter((item) => item.login_mode === 'redirect'))
 const passwordProviders = computed(() => ssoProviders.value.filter((item) => item.login_mode === 'password'))
+const otherProviders = computed(() => ssoProviders.value)
+const selectedPasswordProvider = computed(() =>
+  passwordProviders.value.find((item) => item.key === passwordProviderKey.value) || null
+)
 
 const getRedirectTarget = () =>
   typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/')
     ? route.query.redirect
     : ''
+
+const providerShortcutLabel = (provider: SsoProviderPublic) => {
+  const protocol = provider.protocol.toUpperCase()
+  if (protocol === 'OAUTH2') return 'OAuth2'
+  return protocol
+}
+
+const resetToLocalLogin = () => {
+  passwordProviderKey.value = ''
+}
 
 const persistPermissions = async (token: string) => {
   try {
@@ -249,6 +272,14 @@ const handleSubmit = async () => {
 const handleRedirectSso = (providerKey: string) => {
   const redirectTarget = getRedirectTarget() || '/home/agents'
   window.location.assign(buildSsoStartUrl(providerKey, redirectTarget))
+}
+
+const handleProviderShortcut = (provider: SsoProviderPublic) => {
+  if (provider.login_mode === 'password') {
+    passwordProviderKey.value = provider.key
+    return
+  }
+  handleRedirectSso(provider.key)
 }
 
 const consumeSsoHashToken = async () => {

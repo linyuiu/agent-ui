@@ -1,97 +1,26 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ... import models, schemas, security
 from ...auth import get_current_user
 from ...db import get_db
-from ...permissions import get_user_role_names
-from .common import (
-    ensure_role_exists,
-    ensure_roles_exist,
-    fetch_user_roles_map,
-    normalize_roles,
-    require_menu_manage,
-    require_menu_view,
-    set_user_roles,
-)
+from ...permissions import get_user_role_names_async, require_manage_menu_async, require_menu_action_async
+from .common import normalize_roles
 
 router = APIRouter()
 
 
-@router.get("/users", response_model=list[schemas.AdminUserOut])
-def list_users(
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> list[schemas.AdminUserOut]:
-    require_menu_view(current_user, db, "admin")
-    users = db.query(models.User).order_by(models.User.id.asc()).all()
-    role_map = fetch_user_roles_map(db, [user.id for user in users])
-    return [
-        schemas.AdminUserOut(
-            id=user.id,
-            account=user.account,
-            username=user.username,
-            email=user.email,
-            role=user.role,
-            roles=role_map.get(user.id, [user.role] if user.role else []),
-            status=user.status,
-            source=user.source,
-            source_provider=user.source_provider or "local",
-            source_subject=user.source_subject or "",
-            workspace=user.workspace,
-            created_at=user.created_at,
-        )
-        for user in users
-    ]
-
-
-@router.post("/users", response_model=schemas.AdminUserOut, status_code=201)
-def create_user(
-    payload: schemas.AdminUserCreate,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> schemas.AdminUserOut:
-    require_menu_manage(current_user, db)
-    role_names = normalize_roles(role=payload.role, roles=payload.roles)
-    if not role_names:
-        raise HTTPException(status_code=400, detail="At least one role is required")
-    ensure_roles_exist(db, role_names)
-
-    existing = db.query(models.User).filter(models.User.account == payload.account).first()
-    if existing:
-        raise HTTPException(status_code=409, detail="Account already registered")
-
-    email_existing = db.query(models.User).filter(models.User.email == payload.email).first()
-    if email_existing:
-        raise HTTPException(status_code=409, detail="Email already registered")
-
-    user = models.User(
-        account=payload.account,
-        username=payload.username,
-        email=payload.email,
-        password_hash=security.hash_password(payload.password),
-        role=role_names[0],
-        status=payload.status or "active",
-        source=payload.source or "local",
-        source_provider=payload.source_provider or payload.source or "local",
-        source_subject="",
-        workspace=payload.workspace or "default",
-    )
-    db.add(user)
-    db.flush()
-    set_user_roles(db, user, role_names)
-    db.commit()
-    db.refresh(user)
-    assigned_roles = get_user_role_names(db, user)
+def _admin_user_out(user: models.User, roles: list[str]) -> schemas.AdminUserOut:
     return schemas.AdminUserOut(
         id=user.id,
         account=user.account,
         username=user.username,
         email=user.email,
         role=user.role,
-        roles=assigned_roles,
+        roles=roles,
         status=user.status,
         source=user.source,
         source_provider=user.source_provider or "local",
@@ -101,20 +30,143 @@ def create_user(
     )
 
 
+async def _fetch_user_roles_map(db: AsyncSession, user_ids: list[int]) -> dict[int, list[str]]:
+    if not user_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(models.UserRole.user_id, models.UserRole.role_name)
+            .where(models.UserRole.user_id.in_(user_ids))
+            .order_by(models.UserRole.user_id.asc(), models.UserRole.role_name.asc())
+        )
+    ).all()
+    grouped: dict[int, list[str]] = {user_id: [] for user_id in user_ids}
+    for user_id, role_name in rows:
+        grouped.setdefault(int(user_id), []).append(str(role_name))
+    return grouped
+
+
+async def _ensure_roles_exist(db: AsyncSession, role_names: list[str]) -> None:
+    if not role_names:
+        raise HTTPException(status_code=400, detail="At least one role is required")
+    existing = set(
+        (
+            await db.execute(
+                select(models.Role.name).where(models.Role.name.in_(role_names))
+            )
+        ).scalars().all()
+    )
+    missing = [name for name in role_names if name not in existing]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Role not found: {', '.join(missing)}")
+
+
+async def _ensure_role_exists(db: AsyncSession, role_name: str) -> None:
+    role = (
+        await db.execute(select(models.Role.id).where(models.Role.name == role_name))
+    ).scalar_one_or_none()
+    if role is None:
+        raise HTTPException(status_code=400, detail="Role not found")
+
+
+async def _set_user_roles(db: AsyncSession, user: models.User, role_names: list[str]) -> list[str]:
+    role_names = normalize_roles(roles=role_names)
+    if user.account == "admin":
+        role_names = ["admin"]
+    if not role_names:
+        raise HTTPException(status_code=400, detail="At least one role is required")
+
+    await _ensure_roles_exist(db, role_names)
+
+    existing_rows = (
+        await db.execute(select(models.UserRole).where(models.UserRole.user_id == user.id))
+    ).scalars().all()
+    existing = {row.role_name for row in existing_rows}
+    expected = set(role_names)
+
+    for row in existing_rows:
+        if row.role_name not in expected:
+            await db.delete(row)
+    for role_name in role_names:
+        if role_name in existing:
+            continue
+        db.add(models.UserRole(user_id=user.id, role_name=role_name))
+
+    user.role = "admin" if user.account == "admin" or "admin" in role_names else role_names[0]
+    return role_names
+
+
+@router.get("/users", response_model=list[schemas.AdminUserOut])
+async def list_users(
+    current_user: models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[schemas.AdminUserOut]:
+    await require_menu_action_async(db, current_user, action="view", menu_id="admin")
+    users = (await db.execute(select(models.User).order_by(models.User.id.asc()))).scalars().all()
+    role_map = await _fetch_user_roles_map(db, [user.id for user in users])
+    return [_admin_user_out(user, role_map.get(user.id, [user.role] if user.role else [])) for user in users]
+
+
+@router.post("/users", response_model=schemas.AdminUserOut, status_code=201)
+async def create_user(
+    payload: schemas.AdminUserCreate,
+    current_user: models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> schemas.AdminUserOut:
+    await require_manage_menu_async(db, current_user)
+    role_names = normalize_roles(role=payload.role, roles=payload.roles)
+    if not role_names:
+        raise HTTPException(status_code=400, detail="At least one role is required")
+    await _ensure_roles_exist(db, role_names)
+
+    existing = (
+        await db.execute(select(models.User).where(models.User.account == payload.account))
+    ).scalar_one_or_none()
+    if existing:
+        raise HTTPException(status_code=409, detail="Account already registered")
+
+    email_existing = (
+        await db.execute(select(models.User).where(models.User.email == payload.email))
+    ).scalar_one_or_none()
+    if email_existing:
+        raise HTTPException(status_code=409, detail="Email already registered")
+
+    user = models.User(
+        account=payload.account,
+        username=payload.username,
+        email=payload.email,
+        password_hash=await security.hash_password_async(payload.password),
+        role=role_names[0],
+        status=payload.status or "active",
+        source=payload.source or "local",
+        source_provider=payload.source_provider or payload.source or "local",
+        source_subject="",
+        workspace=payload.workspace or "default",
+    )
+    db.add(user)
+    await db.flush()
+    assigned_roles = await _set_user_roles(db, user, role_names)
+    await db.commit()
+    await db.refresh(user)
+    return _admin_user_out(user, assigned_roles)
+
+
 @router.put("/users/{user_id}", response_model=schemas.AdminUserOut)
-def update_user(
+async def update_user(
     user_id: int,
     payload: schemas.AdminUserUpdate,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> schemas.AdminUserOut:
-    require_menu_manage(current_user, db)
-    user = db.query(models.User).filter(models.User.id == user_id).first()
+    await require_manage_menu_async(db, current_user)
+    user = await db.get(models.User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
     if payload.account and payload.account != user.account:
-        existing = db.query(models.User).filter(models.User.account == payload.account).first()
+        existing = (
+            await db.execute(select(models.User).where(models.User.account == payload.account))
+        ).scalar_one_or_none()
         if existing:
             raise HTTPException(status_code=409, detail="Account already registered")
         user.account = payload.account
@@ -123,19 +175,20 @@ def update_user(
         user.username = payload.username
 
     if payload.email and payload.email != user.email:
-        existing = db.query(models.User).filter(models.User.email == payload.email).first()
+        existing = (
+            await db.execute(select(models.User).where(models.User.email == payload.email))
+        ).scalar_one_or_none()
         if existing:
             raise HTTPException(status_code=409, detail="Email already registered")
         user.email = payload.email
 
     if payload.role is not None or payload.roles is not None:
-        if user.account == "admin":
-            requested_roles = ["admin"]
-        else:
-            requested_roles = normalize_roles(role=payload.role, roles=payload.roles)
-            if not requested_roles:
-                raise HTTPException(status_code=400, detail="At least one role is required")
-        set_user_roles(db, user, requested_roles)
+        requested_roles = ["admin"] if user.account == "admin" else normalize_roles(
+            role=payload.role, roles=payload.roles
+        )
+        if not requested_roles:
+            raise HTTPException(status_code=400, detail="At least one role is required")
+        await _set_user_roles(db, user, requested_roles)
 
     if payload.status:
         if user.account == "admin":
@@ -146,170 +199,159 @@ def update_user(
         user.source = payload.source
     if payload.source_provider:
         user.source_provider = payload.source_provider
-
     if payload.workspace:
         user.workspace = payload.workspace
-
     if payload.password:
-        user.password_hash = security.hash_password(payload.password)
+        user.password_hash = await security.hash_password_async(payload.password)
 
-    db.commit()
-    db.refresh(user)
-    assigned_roles = get_user_role_names(db, user)
-
-    return schemas.AdminUserOut(
-        id=user.id,
-        account=user.account,
-        username=user.username,
-        email=user.email,
-        role=user.role,
-        roles=assigned_roles,
-        status=user.status,
-        source=user.source,
-        source_provider=user.source_provider or "local",
-        source_subject=user.source_subject or "",
-        workspace=user.workspace,
-        created_at=user.created_at,
-    )
+    await db.commit()
+    await db.refresh(user)
+    return _admin_user_out(user, await get_user_role_names_async(db, user))
 
 
 @router.delete("/users/{user_id}")
-def delete_user(
+async def delete_user(
     user_id: int,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
-    require_menu_manage(current_user, db)
-    user = db.query(models.User).filter(models.User.id == user_id).first()
+    await require_manage_menu_async(db, current_user)
+    user = await db.get(models.User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     if user.account == "admin":
         raise HTTPException(status_code=400, detail="Admin account cannot be deleted")
-    db.query(models.PermissionGrant).filter(
-        models.PermissionGrant.subject_type == "user",
-        models.PermissionGrant.subject_id == str(user_id),
-    ).delete(synchronize_session=False)
-    db.query(models.UserRole).filter(models.UserRole.user_id == user_id).delete(
-        synchronize_session=False
+
+    await db.execute(
+        delete(models.PermissionGrant).where(
+            models.PermissionGrant.subject_type == "user",
+            models.PermissionGrant.subject_id == str(user_id),
+        )
     )
-    db.delete(user)
-    db.commit()
+    await db.execute(delete(models.UserRole).where(models.UserRole.user_id == user_id))
+    await db.delete(user)
+    await db.commit()
     return {"status": "deleted"}
 
 
 @router.post("/users/{user_id}/reset-password")
-def reset_user_password(
+async def reset_user_password(
     user_id: int,
     payload: schemas.AdminResetPasswordRequest | None = None,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
-    require_menu_manage(current_user, db)
-    user = db.query(models.User).filter(models.User.id == user_id).first()
+    await require_manage_menu_async(db, current_user)
+    user = await db.get(models.User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
     new_password = (payload.password if payload and payload.password else None) or "agentui@2025"
-    user.password_hash = security.hash_password(new_password)
-    db.commit()
+    user.password_hash = await security.hash_password_async(new_password)
+    await db.commit()
     return {"status": "ok", "password": new_password}
 
 
 @router.get("/roles", response_model=list[schemas.RoleOut])
-def list_roles(
+async def list_roles(
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> list[schemas.RoleOut]:
-    require_menu_view(current_user, db, "admin")
-    roles = db.query(models.Role).order_by(models.Role.id.asc()).all()
+    await require_menu_action_async(db, current_user, action="view", menu_id="admin")
+    roles = (await db.execute(select(models.Role).order_by(models.Role.id.asc()))).scalars().all()
     return [schemas.RoleOut(id=role.id, name=role.name, description=role.description) for role in roles]
 
 
 @router.post("/roles", response_model=schemas.RoleOut, status_code=201)
-def create_role(
+async def create_role(
     payload: schemas.RoleCreate,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> schemas.RoleOut:
-    require_menu_manage(current_user, db)
-    existing = db.query(models.Role).filter(models.Role.name == payload.name).first()
+    await require_manage_menu_async(db, current_user)
+    existing = (
+        await db.execute(select(models.Role).where(models.Role.name == payload.name))
+    ).scalar_one_or_none()
     if existing:
         raise HTTPException(status_code=409, detail="Role already exists")
     role = models.Role(name=payload.name, description=payload.description or "")
     db.add(role)
-    db.commit()
-    db.refresh(role)
+    await db.commit()
+    await db.refresh(role)
     return schemas.RoleOut(id=role.id, name=role.name, description=role.description)
 
 
 @router.delete("/roles/{role_id}")
-def delete_role(
+async def delete_role(
     role_id: int,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
-    require_menu_manage(current_user, db)
-    role = db.query(models.Role).filter(models.Role.id == role_id).first()
+    await require_manage_menu_async(db, current_user)
+    role = await db.get(models.Role, role_id)
     if not role:
         raise HTTPException(status_code=404, detail="Role not found")
     if role.name in {"admin", "user"}:
         raise HTTPException(status_code=400, detail="Protected role cannot be deleted")
 
-    affected_user_ids = [
-        user_id
-        for (user_id,) in db.query(models.UserRole.user_id)
-        .filter(models.UserRole.role_name == role.name)
-        .all()
-    ]
+    affected_user_ids = list(
+        (
+            await db.execute(
+                select(models.UserRole.user_id).where(models.UserRole.role_name == role.name)
+            )
+        ).scalars().all()
+    )
 
-    db.query(models.PermissionGrant).filter(
-        models.PermissionGrant.subject_type == "role",
-        models.PermissionGrant.subject_id == role.name,
-    ).delete(synchronize_session=False)
-    db.query(models.UserRole).filter(models.UserRole.role_name == role.name).delete(
-        synchronize_session=False
+    await db.execute(
+        delete(models.PermissionGrant).where(
+            models.PermissionGrant.subject_type == "role",
+            models.PermissionGrant.subject_id == role.name,
+        )
     )
-    db.query(models.User).filter(models.User.role == role.name).update(
-        {models.User.role: "user"},
-        synchronize_session=False,
-    )
+    await db.execute(delete(models.UserRole).where(models.UserRole.role_name == role.name))
 
     if affected_user_ids:
-        ensure_role_exists(db, "user")
+        await _ensure_role_exists(db, "user")
         links = (
-            db.query(models.UserRole.user_id, models.UserRole.role_name)
-            .filter(models.UserRole.user_id.in_(affected_user_ids))
-            .order_by(models.UserRole.user_id.asc(), models.UserRole.role_name.asc())
-            .all()
-        )
+            await db.execute(
+                select(models.UserRole.user_id, models.UserRole.role_name)
+                .where(models.UserRole.user_id.in_(affected_user_ids))
+                .order_by(models.UserRole.user_id.asc(), models.UserRole.role_name.asc())
+            )
+        ).all()
         role_map: dict[int, list[str]] = {user_id: [] for user_id in affected_user_ids}
         for user_id, role_name in links:
-            role_map.setdefault(user_id, []).append(role_name)
+            role_map.setdefault(int(user_id), []).append(str(role_name))
 
-        users = db.query(models.User).filter(models.User.id.in_(affected_user_ids)).all()
+        users = (
+            await db.execute(select(models.User).where(models.User.id.in_(affected_user_ids)))
+        ).scalars().all()
         for user in users:
             assigned = role_map.get(user.id, [])
             if user.account == "admin":
                 if "admin" not in assigned:
                     db.add(models.UserRole(user_id=user.id, role_name="admin"))
-                assigned = ["admin"]
-            elif not assigned:
-                assigned = ["user"]
+                user.role = "admin"
+                continue
+            if not assigned:
                 db.add(models.UserRole(user_id=user.id, role_name="user"))
+                assigned = ["user"]
             user.role = assigned[0]
 
-    db.delete(role)
-    db.commit()
+    await db.delete(role)
+    await db.commit()
     return {"status": "deleted"}
 
 
 @router.get("/agent-groups", response_model=list[schemas.AgentGroupOut])
-def list_agent_groups(
+async def list_agent_groups(
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> list[schemas.AgentGroupOut]:
-    require_menu_view(current_user, db, "admin")
-    groups = db.query(models.AgentGroup).order_by(models.AgentGroup.name.asc()).all()
+    await require_menu_action_async(db, current_user, action="view", menu_id="admin")
+    groups = (
+        await db.execute(select(models.AgentGroup).order_by(models.AgentGroup.name.asc()))
+    ).scalars().all()
     return [
         schemas.AgentGroupOut(
             id=group.id,
@@ -322,19 +364,21 @@ def list_agent_groups(
 
 
 @router.post("/agent-groups", response_model=schemas.AgentGroupOut, status_code=201)
-def create_agent_group(
+async def create_agent_group(
     payload: schemas.AgentGroupCreate,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> schemas.AgentGroupOut:
-    require_menu_manage(current_user, db)
-    existing = db.query(models.AgentGroup).filter(models.AgentGroup.name == payload.name).first()
+    await require_manage_menu_async(db, current_user)
+    existing = (
+        await db.execute(select(models.AgentGroup).where(models.AgentGroup.name == payload.name))
+    ).scalar_one_or_none()
     if existing:
         raise HTTPException(status_code=409, detail="Group already exists")
     group = models.AgentGroup(name=payload.name, description=payload.description or "")
     db.add(group)
-    db.commit()
-    db.refresh(group)
+    await db.commit()
+    await db.refresh(group)
     return schemas.AgentGroupOut(
         id=group.id,
         name=group.name,
@@ -344,25 +388,27 @@ def create_agent_group(
 
 
 @router.put("/agent-groups/{group_id}", response_model=schemas.AgentGroupOut)
-def update_agent_group(
+async def update_agent_group(
     group_id: int,
     payload: schemas.AgentGroupUpdate,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> schemas.AgentGroupOut:
-    require_menu_manage(current_user, db)
-    group = db.query(models.AgentGroup).filter(models.AgentGroup.id == group_id).first()
+    await require_manage_menu_async(db, current_user)
+    group = await db.get(models.AgentGroup, group_id)
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
     if payload.name and payload.name != group.name:
-        existing = db.query(models.AgentGroup).filter(models.AgentGroup.name == payload.name).first()
+        existing = (
+            await db.execute(select(models.AgentGroup).where(models.AgentGroup.name == payload.name))
+        ).scalar_one_or_none()
         if existing:
             raise HTTPException(status_code=409, detail="Group already exists")
         group.name = payload.name
     if payload.description is not None:
         group.description = payload.description
-    db.commit()
-    db.refresh(group)
+    await db.commit()
+    await db.refresh(group)
     return schemas.AgentGroupOut(
         id=group.id,
         name=group.name,
@@ -372,21 +418,21 @@ def update_agent_group(
 
 
 @router.delete("/agent-groups/{group_id}")
-def delete_agent_group(
+async def delete_agent_group(
     group_id: int,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
-    require_menu_manage(current_user, db)
-    group = db.query(models.AgentGroup).filter(models.AgentGroup.id == group_id).first()
+    await require_manage_menu_async(db, current_user)
+    group = await db.get(models.AgentGroup, group_id)
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
     group_name = group.name
-    agents = db.query(models.Agent).all()
+    agents = (await db.execute(select(models.Agent))).scalars().all()
     for agent in agents:
         if group_name in (agent.groups or []):
-            agent.groups = [g for g in agent.groups if g != group_name]
+            agent.groups = [g for g in (agent.groups or []) if g != group_name]
             agent.group_name = agent.groups[0] if agent.groups else ""
-    db.delete(group)
-    db.commit()
+    await db.delete(group)
+    await db.commit()
     return {"status": "deleted"}

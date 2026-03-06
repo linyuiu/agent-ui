@@ -18,7 +18,7 @@ const handleUnauthorized = () => {
   }
 }
 
-const getAuthHeaders = () => {
+const getAuthHeaders = (): Record<string, string> => {
   const raw = localStorage.getItem('access_token')
   if (!raw) return {}
   const token = normalizeToken(raw)

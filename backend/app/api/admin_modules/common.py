@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from uuid import uuid4
 
 import httpx
 from fastapi import HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from ... import models, schemas
@@ -314,6 +316,17 @@ def fit2cloud_fetch(base_url: str, token: str, path: str) -> dict:
     raise HTTPException(status_code=400, detail=f"Upstream error: {data}")
 
 
+async def fit2cloud_fetch_async(base_url: str, token: str, path: str) -> dict:
+    headers = {"accept": "application/json", "Authorization": fit2cloud_auth_header(token)}
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.get(f"{base_url}{path}", headers=headers)
+    resp.raise_for_status()
+    data = resp.json()
+    if isinstance(data, dict) and data.get("code") == 200:
+        return data
+    raise HTTPException(status_code=400, detail=f"Upstream error: {data}")
+
+
 def new_proxy_id() -> str:
     return uuid4().hex
 
@@ -430,21 +443,78 @@ def fetch_fit2cloud_app_payloads(
     return payloads, errors
 
 
-def sync_fit2cloud_workspace_agents(
+async def fetch_fit2cloud_app_payloads_async(
+    base_url: str,
+    token: str,
+    workspace_id: str,
+    apps: list[dict],
+) -> tuple[list[dict], list[str]]:
+    targets = [app for app in apps if isinstance(app, dict) and app.get("id")]
+    if not targets:
+        return [], []
+
+    semaphore = asyncio.Semaphore(fit2cloud_sync_worker_count(len(targets)))
+
+    async def _fetch_one(app: dict) -> dict:
+        app_id = str(app.get("id"))
+        try:
+            async with semaphore:
+                detail_resp, token_resp = await asyncio.gather(
+                    fit2cloud_fetch_async(
+                        base_url,
+                        token,
+                        f"/admin/api/workspace/{workspace_id}/application/{app_id}",
+                    ),
+                    fit2cloud_fetch_async(
+                        base_url,
+                        token,
+                        f"/admin/api/workspace/{workspace_id}/application/{app_id}/access_token",
+                    ),
+                )
+        except Exception:
+            return {"error": f"application {app_id}: failed to fetch detail/token"}
+
+        detail = detail_resp.get("data") or {}
+        token_data = token_resp.get("data") or {}
+        if not token_data.get("access_token"):
+            return {"error": f"application {app_id}: missing access_token"}
+
+        return {
+            "app_id": app_id,
+            "app": app,
+            "detail": detail,
+            "token_data": token_data,
+        }
+
+    collected = await asyncio.gather(*(_fetch_one(app) for app in targets))
+    payloads: list[dict] = []
+    errors: list[str] = []
+    for item in collected:
+        error = item.get("error")
+        if error:
+            errors.append(str(error))
+            continue
+        payloads.append(item)
+    return payloads, errors
+
+
+def _apply_fit2cloud_workspace_agents(
     db: Session,
     current_user: models.User,
     *,
     base_url: str,
-    token: str,
+    config_id: int | None,
     workspace_id: str,
     workspace_name: str,
     apps: list[dict],
+    payloads: list[dict],
+    errors: list[str],
 ) -> tuple[int, int, list[str]]:
     workspace_key = str(workspace_id)
     workspace_label = str(workspace_name or workspace_key)
     target_apps = [item for item in apps if isinstance(item, dict) and item.get("id")]
     if not target_apps:
-        return 0, 0, []
+        return 0, 0, list(errors)
 
     groups = normalize_groups([workspace_label])
     if groups:
@@ -455,7 +525,6 @@ def sync_fit2cloud_workspace_agents(
         db.query(models.Agent)
         .filter(
             models.Agent.is_synced.is_(True),
-            models.Agent.source_type == "fit2cloud",
             models.Agent.workspace_id == workspace_key,
             models.Agent.external_id.in_(app_ids),
         )
@@ -464,13 +533,6 @@ def sync_fit2cloud_workspace_agents(
     existing_by_external_id = {
         str(agent.external_id): agent for agent in existing_agents if agent.external_id
     }
-
-    payloads, errors = fetch_fit2cloud_app_payloads(
-        base_url=base_url,
-        token=token,
-        workspace_id=workspace_key,
-        apps=target_apps,
-    )
 
     imported = 0
     updated = 0
@@ -513,6 +575,8 @@ def sync_fit2cloud_workspace_agents(
                 is_synced=True,
                 external_id=app_id,
                 workspace_id=workspace_key,
+                workspace_name=workspace_label,
+                sync_config_id=config_id,
             )
             set_agent_upstream_chat_link(
                 new_agent,
@@ -535,6 +599,8 @@ def sync_fit2cloud_workspace_agents(
         existing.is_synced = True
         existing.external_id = app_id
         existing.workspace_id = workspace_key
+        existing.workspace_name = workspace_label
+        existing.sync_config_id = config_id
         set_agent_upstream_chat_link(
             existing,
             upstream_base_url=base_url,
@@ -542,7 +608,76 @@ def sync_fit2cloud_workspace_agents(
         )
         updated += 1
 
-    return imported, updated, errors
+    return imported, updated, list(errors)
+
+
+def sync_fit2cloud_workspace_agents(
+    db: Session,
+    current_user: models.User,
+    *,
+    base_url: str,
+    token: str,
+    config_id: int | None,
+    workspace_id: str,
+    workspace_name: str,
+    apps: list[dict],
+) -> tuple[int, int, list[str]]:
+    target_apps = [item for item in apps if isinstance(item, dict) and item.get("id")]
+    if not target_apps:
+        return 0, 0, []
+
+    payloads, errors = fetch_fit2cloud_app_payloads(
+        base_url=base_url,
+        token=token,
+        workspace_id=str(workspace_id),
+        apps=target_apps,
+    )
+    return _apply_fit2cloud_workspace_agents(
+        db,
+        current_user,
+        base_url=base_url,
+        config_id=config_id,
+        workspace_id=workspace_id,
+        workspace_name=workspace_name,
+        apps=target_apps,
+        payloads=payloads,
+        errors=errors,
+    )
+
+async def sync_fit2cloud_workspace_agents_async(
+    db: AsyncSession,
+    current_user: models.User,
+    *,
+    base_url: str,
+    token: str,
+    config_id: int | None,
+    workspace_id: str,
+    workspace_name: str,
+    apps: list[dict],
+) -> tuple[int, int, list[str]]:
+    target_apps = [item for item in apps if isinstance(item, dict) and item.get("id")]
+    if not target_apps:
+        return 0, 0, []
+
+    payloads, errors = await fetch_fit2cloud_app_payloads_async(
+        base_url=base_url,
+        token=token,
+        workspace_id=str(workspace_id),
+        apps=target_apps,
+    )
+    return await db.run_sync(
+        lambda sync_db: _apply_fit2cloud_workspace_agents(
+            sync_db,
+            current_user,
+            base_url=base_url,
+            config_id=config_id,
+            workspace_id=workspace_id,
+            workspace_name=workspace_name,
+            apps=target_apps,
+            payloads=payloads,
+            errors=errors,
+        )
+    )
 
 
 def get_agent_api_config(db: Session, config_id: int) -> models.AgentApiConfig:

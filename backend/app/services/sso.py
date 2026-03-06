@@ -10,12 +10,15 @@ from xml.etree import ElementTree
 
 import httpx
 from fastapi import HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from .. import models, schemas, security
 from ..config import settings
 from ..permissions import get_user_role_names
+from .chat_user_sync import resolve_sso_chat_user_identity
 
 SSO_PROTOCOLS = {"ldap", "cas", "oidc", "oauth2", "saml2"}
 PASSWORD_PROTOCOLS = {"ldap"}
@@ -38,6 +41,7 @@ def normalize_provider_key(raw: str) -> str:
 
 
 def provider_login_mode(protocol: str) -> str:
+    protocol = normalize_protocol(protocol)
     return "password" if protocol in PASSWORD_PROTOCOLS else "redirect"
 
 
@@ -81,11 +85,12 @@ def mask_sensitive_dict(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_provider_out(provider: models.AuthProviderConfig) -> schemas.SsoProviderOut:
+    protocol = normalize_protocol(provider.protocol)
     return schemas.SsoProviderOut(
         id=provider.id,
         key=provider.key,
         name=provider.name,
-        protocol=provider.protocol,
+        protocol=protocol,
         enabled=bool(provider.enabled),
         auto_create_user=bool(provider.auto_create_user),
         default_role=provider.default_role or "user",
@@ -97,11 +102,12 @@ def build_provider_out(provider: models.AuthProviderConfig) -> schemas.SsoProvid
 
 
 def build_provider_public(provider: models.AuthProviderConfig) -> schemas.SsoProviderPublic:
+    protocol = normalize_protocol(provider.protocol)
     return schemas.SsoProviderPublic(
         key=provider.key,
         name=provider.name,
-        protocol=provider.protocol,
-        login_mode=provider_login_mode(provider.protocol),
+        protocol=protocol,
+        login_mode=provider_login_mode(protocol),
     )
 
 
@@ -211,7 +217,10 @@ def upsert_sso_user(
     db: Session,
     provider: models.AuthProviderConfig,
     identity: dict[str, str],
+    *,
+    password_hash: str | None = None,
 ) -> models.User:
+    provider_protocol = normalize_protocol(provider.protocol)
     subject = str(identity.get("subject") or "").strip()
     account = str(identity.get("account") or "").strip()
     username = str(identity.get("username") or "").strip() or account
@@ -235,11 +244,11 @@ def upsert_sso_user(
         existing.username = username or existing.username
         existing.email = email or existing.email
         existing.workspace = workspace
-        existing.source = provider.protocol
+        existing.source = provider_protocol
         existing.source_provider = provider.key
         existing.source_subject = subject
         if not existing.password_hash:
-            existing.password_hash = security.hash_password(uuid4().hex)
+            existing.password_hash = password_hash or security.hash_password(uuid4().hex)
         db.flush()
         return existing
 
@@ -253,10 +262,10 @@ def upsert_sso_user(
         account=safe_account,
         username=username or safe_account,
         email=email,
-        password_hash=security.hash_password(uuid4().hex),
+        password_hash=password_hash or security.hash_password(uuid4().hex),
         role=role_name,
         status="active",
-        source=provider.protocol,
+        source=provider_protocol,
         source_provider=provider.key,
         source_subject=subject,
         workspace=workspace,
@@ -308,12 +317,18 @@ def build_frontend_redirect(token: str, target_path: str = "/home/agents") -> st
     return f"{base}/login?redirect={quote(safe_target, safe='')}&sso=1#token={quote(token, safe='')}"
 
 
-def _http_json(url: str, *, method: str = "GET", data: dict | None = None, headers: dict | None = None) -> dict:
-    with httpx.Client(timeout=20.0) as client:
+async def _http_json(
+    url: str,
+    *,
+    method: str = "GET",
+    data: dict | None = None,
+    headers: dict | None = None,
+) -> dict:
+    async with httpx.AsyncClient(timeout=20.0) as client:
         if method == "POST":
-            resp = client.post(url, data=data or {}, headers=headers or {})
+            resp = await client.post(url, data=data or {}, headers=headers or {})
         else:
-            resp = client.get(url, params=data or {}, headers=headers or {})
+            resp = await client.get(url, params=data or {}, headers=headers or {})
     if resp.status_code >= 400:
         raise HTTPException(status_code=400, detail=f"上游认证服务异常: {resp.status_code}")
     payload = resp.json()
@@ -322,7 +337,7 @@ def _http_json(url: str, *, method: str = "GET", data: dict | None = None, heade
     return payload
 
 
-def _get_oidc_endpoints(config: dict[str, Any]) -> tuple[str, str]:
+async def _get_oidc_endpoints(config: dict[str, Any]) -> tuple[str, str]:
     authorize_url = str(config.get("authorize_url") or "").strip()
     token_url = str(config.get("token_url") or "").strip()
     if authorize_url and token_url:
@@ -335,7 +350,7 @@ def _get_oidc_endpoints(config: dict[str, Any]) -> tuple[str, str]:
     if not discovery_url:
         raise HTTPException(status_code=400, detail="OIDC/OAuth2 配置缺少 authorize_url/token_url")
 
-    payload = _http_json(discovery_url)
+    payload = await _http_json(discovery_url)
     authorize_url = str(payload.get("authorization_endpoint") or "").strip()
     token_url = str(payload.get("token_endpoint") or "").strip()
     if not authorize_url or not token_url:
@@ -343,14 +358,14 @@ def _get_oidc_endpoints(config: dict[str, Any]) -> tuple[str, str]:
     return authorize_url, token_url
 
 
-def build_redirect_login_url(provider: models.AuthProviderConfig, redirect: str) -> str:
-    protocol = provider.protocol
+async def build_redirect_login_url(provider: models.AuthProviderConfig, redirect: str) -> str:
+    protocol = normalize_protocol(provider.protocol)
     config = dict(provider.config or {})
     state = build_state_token(provider.key, redirect)
     callback_url = build_callback_url(provider.key)
 
     if protocol in {"oidc", "oauth2"}:
-        authorize_url, _ = _get_oidc_endpoints(config)
+        authorize_url, _ = await _get_oidc_endpoints(config)
         scopes = str(config.get("scope") or config.get("scopes") or "openid profile email").strip()
         query = {
             "response_type": "code",
@@ -391,9 +406,9 @@ def _decode_id_token_claims(id_token: str) -> dict[str, Any]:
         return {}
 
 
-def _exchange_oidc_code(provider: models.AuthProviderConfig, code: str) -> dict[str, Any]:
+async def _exchange_oidc_code(provider: models.AuthProviderConfig, code: str) -> dict[str, Any]:
     config = dict(provider.config or {})
-    _, token_url = _get_oidc_endpoints(config)
+    _, token_url = await _get_oidc_endpoints(config)
     callback_url = build_callback_url(provider.key)
 
     payload = {
@@ -404,7 +419,7 @@ def _exchange_oidc_code(provider: models.AuthProviderConfig, code: str) -> dict[
         "client_secret": str(config.get("client_secret") or "").strip(),
     }
     headers = {"accept": "application/json"}
-    token_data = _http_json(token_url, method="POST", data=payload, headers=headers)
+    token_data = await _http_json(token_url, method="POST", data=payload, headers=headers)
     profile: dict[str, Any] = {}
     id_token = str(token_data.get("id_token") or "").strip()
     if id_token:
@@ -413,8 +428,8 @@ def _exchange_oidc_code(provider: models.AuthProviderConfig, code: str) -> dict[
     userinfo_url = str(config.get("userinfo_url") or "").strip()
     access_token = str(token_data.get("access_token") or "").strip()
     if userinfo_url and access_token:
-        with httpx.Client(timeout=20.0) as client:
-            resp = client.get(
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(
                 userinfo_url,
                 headers={"Authorization": f"Bearer {access_token}", "accept": "application/json"},
             )
@@ -451,7 +466,7 @@ def _parse_cas_xml(xml_text: str) -> dict[str, Any]:
     return profile
 
 
-def _validate_cas_ticket(provider: models.AuthProviderConfig, ticket: str, state: str) -> dict[str, Any]:
+async def _validate_cas_ticket(provider: models.AuthProviderConfig, ticket: str, state: str) -> dict[str, Any]:
     config = dict(provider.config or {})
     cas_base_url = str(config.get("cas_base_url") or "").strip().rstrip("/")
     if not cas_base_url:
@@ -459,8 +474,8 @@ def _validate_cas_ticket(provider: models.AuthProviderConfig, ticket: str, state
     validate_url = str(config.get("validate_url") or f"{cas_base_url}/serviceValidate").strip()
     service_url = f"{build_callback_url(provider.key)}?state={quote(state, safe='')}"
 
-    with httpx.Client(timeout=20.0) as client:
-        resp = client.get(validate_url, params={"service": service_url, "ticket": ticket})
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.get(validate_url, params={"service": service_url, "ticket": ticket})
     if resp.status_code >= 400:
         raise HTTPException(status_code=400, detail="CAS 票据校验失败")
     return _parse_cas_xml(resp.text)
@@ -504,12 +519,12 @@ def _parse_saml_response(raw: str) -> dict[str, Any]:
     return profile
 
 
-def authenticate_password_provider(
+def _authenticate_password_provider_sync(
     provider: models.AuthProviderConfig,
     account: str,
     password: str,
 ) -> dict[str, Any]:
-    if provider.protocol != "ldap":
+    if normalize_protocol(provider.protocol) != "ldap":
         raise HTTPException(status_code=400, detail="当前单点协议不支持账号密码登录")
     config = dict(provider.config or {})
     server_url = str(config.get("server_url") or "").strip()
@@ -575,13 +590,21 @@ def authenticate_password_provider(
     return attributes
 
 
-def authenticate_redirect_provider(
+async def authenticate_password_provider(
+    provider: models.AuthProviderConfig,
+    account: str,
+    password: str,
+) -> dict[str, Any]:
+    return await run_in_threadpool(_authenticate_password_provider_sync, provider, account, password)
+
+
+async def authenticate_redirect_provider(
     provider: models.AuthProviderConfig,
     *,
     query_params: dict[str, str],
     body_params: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    protocol = provider.protocol
+    protocol = normalize_protocol(provider.protocol)
     state = str(query_params.get("state") or body_params and body_params.get("RelayState") or "").strip()
     if not state:
         raise HTTPException(status_code=400, detail="缺少 state 参数")
@@ -590,13 +613,13 @@ def authenticate_redirect_provider(
         code = str(query_params.get("code") or "").strip()
         if not code:
             raise HTTPException(status_code=400, detail="缺少授权 code")
-        return _exchange_oidc_code(provider, code)
+        return await _exchange_oidc_code(provider, code)
 
     if protocol == "cas":
         ticket = str(query_params.get("ticket") or "").strip()
         if not ticket:
             raise HTTPException(status_code=400, detail="缺少 CAS ticket")
-        return _validate_cas_ticket(provider, ticket, state)
+        return await _validate_cas_ticket(provider, ticket, state)
 
     if protocol == "saml2":
         saml_response = str(query_params.get("SAMLResponse") or "").strip()
@@ -606,3 +629,93 @@ def authenticate_redirect_provider(
         return _parse_saml_response(saml_response)
 
     raise HTTPException(status_code=400, detail="该协议不支持回调登录")
+
+
+async def build_user_public_async(db: AsyncSession, user: models.User) -> schemas.UserPublic:
+    return await db.run_sync(lambda sync_db: build_user_public(sync_db, user))
+
+
+def _sso_user_needs_password_hash(
+    db: Session,
+    provider: models.AuthProviderConfig,
+    identity: dict[str, str],
+) -> bool:
+    subject = str(identity.get("subject") or "").strip()
+    account = str(identity.get("account") or "").strip()
+
+    existing = None
+    if subject:
+        existing = (
+            db.query(models.User)
+            .filter(
+                models.User.source_provider == provider.key,
+                models.User.source_subject == subject,
+            )
+            .first()
+        )
+    if not existing and account:
+        existing = db.query(models.User).filter(models.User.account == account).first()
+
+    if existing:
+        return not bool(existing.password_hash)
+    return bool(provider.auto_create_user)
+
+
+async def upsert_sso_user_async(
+    db: AsyncSession,
+    provider: models.AuthProviderConfig,
+    identity: dict[str, str],
+) -> models.User:
+    provider_protocol = normalize_protocol(provider.protocol)
+    matched_user, identity_override = await resolve_sso_chat_user_identity(
+        db,
+        provider=provider,
+        identity=identity,
+    )
+    merged_identity = dict(identity)
+    if identity_override:
+        merged_identity.update(identity_override)
+
+    if matched_user:
+        matched_user.account = str(merged_identity.get("account") or matched_user.account).strip() or matched_user.account
+        matched_user.username = (
+            str(merged_identity.get("username") or matched_user.username).strip() or matched_user.username
+        )
+        matched_user.email = _safe_email(matched_user.account, merged_identity.get("email") or matched_user.email)
+        matched_user.workspace = (
+            str(merged_identity.get("workspace") or provider.default_workspace or matched_user.workspace).strip()
+            or matched_user.workspace
+        )
+        matched_user.status = "active"
+        matched_user.source = provider_protocol or matched_user.source
+        matched_user.source_provider = (
+            str(merged_identity.get("source_provider") or provider.key or matched_user.source_provider).strip()
+            or matched_user.source_provider
+        )
+        matched_user.source_subject = (
+            str(merged_identity.get("subject") or matched_user.source_subject).strip()
+            or matched_user.source_subject
+        )
+        if not matched_user.password_hash:
+            matched_user.password_hash = await security.hash_password_async(uuid4().hex)
+        await db.commit()
+        await db.refresh(matched_user)
+        return matched_user
+
+    needs_password_hash = await db.run_sync(
+        lambda sync_db: _sso_user_needs_password_hash(sync_db, provider, merged_identity)
+    )
+    password_hash = None
+    if needs_password_hash:
+        password_hash = await security.hash_password_async(uuid4().hex)
+    user = await db.run_sync(
+        lambda sync_db: upsert_sso_user(
+            sync_db,
+            provider,
+            merged_identity,
+            password_hash=password_hash,
+        )
+    )
+    await db.commit()
+    await db.refresh(user)
+    return user

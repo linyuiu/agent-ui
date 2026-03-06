@@ -79,6 +79,31 @@
   gap: 16px;
 }
 
+.form-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.form-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: #203137;
+}
+
+.provider-hint {
+  margin: -6px 0 0;
+  color: #5d6d73;
+  font-size: 13px;
+}
+
+.switch-btn {
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
 .field {
   display: grid;
   gap: 8px;
@@ -203,25 +228,53 @@
 }
 
 .sso-block {
-  margin-top: 12px;
-  border-top: 1px solid rgba(15, 40, 55, 0.12);
-  padding-top: 14px;
+  margin-top: 18px;
 }
 
-.sso-title {
-  margin: 0 0 10px;
+.sso-divider {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 14px;
+}
+
+.sso-divider::before,
+.sso-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(15, 40, 55, 0.14);
+}
+
+.sso-divider span {
+  padding: 0 14px;
   font-size: 13px;
-  color: #5a6b70;
+  color: #6a7a80;
 }
 
 .sso-actions {
   display: flex;
+  justify-content: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 12px;
 }
 
 .sso-btn {
-  padding: 8px 12px;
+  min-width: 64px;
+  min-height: 64px;
+  border-radius: 999px;
+  padding: 0 12px;
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sso-btn.active {
+  border-color: rgba(15, 179, 185, 0.45);
+  background: rgba(15, 179, 185, 0.1);
+  color: #0a7e84;
 }
 
 @keyframes float {

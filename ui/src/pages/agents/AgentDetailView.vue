@@ -55,6 +55,43 @@
       该智能体来源于 API，同步数据不可手动编辑。
     </p>
 
+    <div v-if="agent?.status_editable_only" class="panel chat-user-panel">
+      <div class="section-header compact">
+        <div>
+          <h3>对话用户</h3>
+          <p>展示当前智能体下的用户组与对话用户授权状态，仅用于查看。</p>
+        </div>
+      </div>
+      <p v-if="chatUserLoading" class="state">加载对话用户中...</p>
+      <p v-else-if="chatUserError" class="state error">{{ chatUserError }}</p>
+      <p v-else-if="chatUserView?.last_synced_at" class="state success">
+        最近同步时间：{{ formatIsoDateTime(chatUserView.last_synced_at) }}
+      </p>
+      <div v-if="chatUserView?.groups?.length" class="chat-user-groups">
+        <div v-for="group in chatUserView.groups" :key="group.id" class="chat-user-group-card">
+          <div class="chat-user-group-head">
+            <div>
+              <strong>{{ group.name }}</strong>
+              <small>{{ group.id }}</small>
+            </div>
+            <span class="tag tag-small readonly">{{ group.users.length }} 人</span>
+          </div>
+          <div class="chat-user-list">
+            <div v-for="user in group.users" :key="`${group.id}-${user.id}`" class="chat-user-item">
+              <div class="chat-user-main">
+                <strong>{{ user.nick_name || user.username }}</strong>
+                <small>{{ user.username }} · {{ user.source || 'unknown' }}</small>
+              </div>
+              <span class="tag tag-small" :class="user.is_auth ? 'active' : 'paused'">
+                {{ user.is_auth ? '已授权' : '未授权' }}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p v-else-if="!chatUserLoading && !chatUserError" class="state">暂无对话用户同步数据。</p>
+    </div>
+
     <div v-if="agent && agent.editable && editing" class="panel edit-panel">
       <form class="form" @submit.prevent="handleUpdate">
         <div class="field">
@@ -194,7 +231,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAgentGroupOptions } from '../../composables/use-agent-group-options'
 import { useCreatableGroupSelector } from '../../composables/use-creatable-group-selector'
 import { useDocumentClick } from '../../composables/use-document-click'
-import { fetchAgent, updateAgent, type AgentDetail } from '../../services/agents'
+import { fetchAgent, fetchAgentChatUsers, updateAgent, type AgentChatUserView, type AgentDetail } from '../../services/agents'
 import { createAgentGroup } from '../../services/groups'
 import { buildOpenAgentUrl } from '../../utils/agent-links'
 import { formatIsoDateTime } from '../../utils/text-format'
@@ -210,6 +247,9 @@ const saving = ref(false)
 const saveError = ref('')
 const saveSuccess = ref('')
 const openLinkError = ref('')
+const chatUserView = ref<AgentChatUserView | null>(null)
+const chatUserLoading = ref(false)
+const chatUserError = ref('')
 const { groupOptions, loadGroupOptions } = useAgentGroupOptions()
 const groupQuery = ref('')
 const groupCreateLoading = ref(false)
@@ -271,6 +311,22 @@ const loadAgent = async (id: string) => {
   error.value = ''
   try {
     agent.value = await fetchAgent(id)
+    if (agent.value?.status_editable_only) {
+      chatUserLoading.value = true
+      chatUserError.value = ''
+      try {
+        chatUserView.value = await fetchAgentChatUsers(id)
+      } catch (chatErr) {
+        chatUserView.value = null
+        chatUserError.value = chatErr instanceof Error ? chatErr.message : '加载对话用户失败'
+      } finally {
+        chatUserLoading.value = false
+      }
+    } else {
+      chatUserView.value = null
+      chatUserError.value = ''
+      chatUserLoading.value = false
+    }
     if (agent.value) {
       editForm.value = {
         name: agent.value.name,

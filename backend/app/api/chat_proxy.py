@@ -6,7 +6,8 @@ import logging
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from urllib.parse import parse_qsl, quote, urlencode
 from urllib.parse import urlparse
 
@@ -14,7 +15,7 @@ from .. import models
 from ..auth import get_user_from_token
 from ..config import settings
 from ..db import get_db
-from ..permissions import evaluate_permission, require_menu_action
+from ..permissions import evaluate_permission_async, require_menu_action_async
 from ..services.chat_links import build_proxy_chat_url, build_upstream_chat_url
 
 router = APIRouter(tags=["chat_proxy"])
@@ -106,7 +107,7 @@ def _proxy_response_headers(headers: httpx.Headers, agent: models.Agent) -> dict
     return forwarded
 
 
-def _agent_from_referer(db: Session, referer: str) -> models.Agent | None:
+async def _agent_from_referer(db: AsyncSession, referer: str) -> models.Agent | None:
     if not referer:
         return None
     try:
@@ -119,17 +120,19 @@ def _agent_from_referer(db: Session, referer: str) -> models.Agent | None:
     referer_proxy_id = parts[1]
     if not referer_proxy_id:
         return None
-    return db.query(models.Agent).filter(models.Agent.proxy_id == referer_proxy_id).first()
+    return (
+        await db.execute(select(models.Agent).where(models.Agent.proxy_id == referer_proxy_id))
+    ).scalar_one_or_none()
 
 
-def _agent_from_cookie(db: Session, request: Request) -> models.Agent | None:
+async def _agent_from_cookie(db: AsyncSession, request: Request) -> models.Agent | None:
     proxy_id = (request.cookies.get(_PROXY_ID_COOKIE) or "").strip()
     if not proxy_id:
         return None
-    return db.query(models.Agent).filter(models.Agent.proxy_id == proxy_id).first()
+    return (await db.execute(select(models.Agent).where(models.Agent.proxy_id == proxy_id))).scalar_one_or_none()
 
 
-def _agent_from_query(db: Session, query: str) -> models.Agent | None:
+async def _agent_from_query(db: AsyncSession, query: str) -> models.Agent | None:
     if not query:
         return None
     params = parse_qsl(query, keep_blank_values=True)
@@ -149,7 +152,9 @@ def _agent_from_query(db: Session, query: str) -> models.Agent | None:
     if not candidates:
         return None
 
-    agents = db.query(models.Agent).filter(models.Agent.proxy_id.in_(candidates)).all()
+    agents = (
+        await db.execute(select(models.Agent).where(models.Agent.proxy_id.in_(candidates)))
+    ).scalars().all()
     if not agents:
         return None
 
@@ -173,30 +178,30 @@ def _is_chat_available(agent: models.Agent) -> bool:
     return (agent.status or "").strip().lower() == "active"
 
 
-def _resolve_proxy_target(
-    db: Session, request: Request, request_path: str
+async def _resolve_proxy_target(
+    db: AsyncSession, request: Request, request_path: str
 ) -> tuple[models.Agent, list[str]]:
     parts = [part for part in request_path.split("/") if part]
     if not parts:
         raise HTTPException(status_code=404, detail="Chat endpoint not found")
 
     first = parts[0]
-    agent = db.query(models.Agent).filter(models.Agent.proxy_id == first).first()
+    agent = (await db.execute(select(models.Agent).where(models.Agent.proxy_id == first))).scalar_one_or_none()
     if agent:
         rest = "/".join(parts[1:])
         return agent, _build_upstream_paths(agent, rest)
 
-    query_agent = _agent_from_query(db, request.url.query)
+    query_agent = await _agent_from_query(db, request.url.query)
     if query_agent:
         rest = request_path.lstrip("/")
         return query_agent, _build_upstream_paths(query_agent, rest)
 
-    referer_agent = _agent_from_referer(db, request.headers.get("referer", ""))
+    referer_agent = await _agent_from_referer(db, request.headers.get("referer", ""))
     if referer_agent:
         rest = request_path.lstrip("/")
         return referer_agent, _build_upstream_paths(referer_agent, rest)
 
-    cookie_agent = _agent_from_cookie(db, request)
+    cookie_agent = await _agent_from_cookie(db, request)
     if cookie_agent:
         rest = request_path.lstrip("/")
         return cookie_agent, _build_upstream_paths(cookie_agent, rest)
@@ -245,7 +250,7 @@ def _extract_bearer_token(request: Request) -> str:
     return parts[1].strip()
 
 
-def _resolve_authenticated_context(request: Request, db: Session) -> tuple[str, models.User]:
+async def _resolve_authenticated_context(request: Request, db: AsyncSession) -> tuple[str, models.User]:
     token_candidates = [
         _extract_bearer_token(request),
         (request.cookies.get(_AUTH_COOKIE) or "").strip(),
@@ -258,7 +263,7 @@ def _resolve_authenticated_context(request: Request, db: Session) -> tuple[str, 
             continue
         checked.add(token)
         try:
-            user = get_user_from_token(token, db)
+            user = await get_user_from_token(token, db)
             return token, user
         except HTTPException:
             continue
@@ -311,10 +316,10 @@ def _resolve_agent_groups(agent: models.Agent) -> list[str]:
     return normalized
 
 
-def _require_agent_chat_access(db: Session, user: models.User, agent: models.Agent) -> None:
-    require_menu_action(db, user, action="view", menu_id="agents")
+async def _require_agent_chat_access(db: AsyncSession, user: models.User, agent: models.Agent) -> None:
+    await require_menu_action_async(db, user, action="view", menu_id="agents")
     groups = _resolve_agent_groups(agent)
-    decision = evaluate_permission(
+    decision = await evaluate_permission_async(
         db,
         user,
         action="view",
@@ -328,15 +333,15 @@ def _require_agent_chat_access(db: Session, user: models.User, agent: models.Age
 
 
 @router.post("/chat/session")
-def create_chat_session(
+async def create_chat_session(
     request: Request,
     response: Response,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
     token = _extract_bearer_token(request)
     if not token:
         raise HTTPException(status_code=401, detail=_AUTH_REQUIRED_DETAIL)
-    get_user_from_token(token, db)
+    await get_user_from_token(token, db)
     _set_chat_auth_cookie(response, token, secure=request.url.scheme == "https")
     return {"status": "ok"}
 
@@ -446,18 +451,18 @@ def _should_try_fallback_path(response: httpx.Response) -> bool:
 async def proxy_chat(
     request_path: str,
     request: Request,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> Response:
     try:
-        auth_token, current_user = _resolve_authenticated_context(request, db)
+        auth_token, current_user = await _resolve_authenticated_context(request, db)
     except HTTPException as exc:
         if exc.status_code == 401 and _is_browser_navigation(request):
             return RedirectResponse(url=_login_redirect_url(request), status_code=307)
         raise
-    agent, upstream_paths = _resolve_proxy_target(db, request, request_path)
+    agent, upstream_paths = await _resolve_proxy_target(db, request, request_path)
     if not agent:
         raise HTTPException(status_code=404, detail="Chat endpoint not found")
-    _require_agent_chat_access(db, current_user, agent)
+    await _require_agent_chat_access(db, current_user, agent)
     if not _is_chat_available(agent):
         raise HTTPException(status_code=403, detail="当前智能体不可用")
     if not agent.upstream_base_url or not agent.upstream_token:

@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 
 from app.api import register_routes
 from app.config import settings
@@ -11,7 +12,7 @@ from app.migrations import ensure_schema
 def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        ensure_schema()
+        await run_in_threadpool(ensure_schema)
         yield
 
     app = FastAPI(title="Agent-UI", lifespan=lifespan)

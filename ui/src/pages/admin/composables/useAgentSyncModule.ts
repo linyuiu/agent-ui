@@ -6,10 +6,12 @@ import {
   createAgentGroup,
   deleteAgentApiConfig,
   deleteAgentGroup,
+  fetchAgentSyncTasks,
   fetchAgentApiConfigs,
   fetchAgentGroups,
   fetchFit2CloudApplications,
   fetchFit2CloudWorkspaces,
+  syncAgentChatUsers,
   syncFit2CloudByConfig,
   updateAgentApiConfig,
   type AgentApiConfig,
@@ -17,6 +19,7 @@ import {
   type AgentGroup,
   type Fit2CloudApplication,
   type Fit2CloudWorkspace,
+  type SyncTask,
 } from '../../../services/admin'
 import { getCurrentRole } from '../../../services/session'
 
@@ -27,6 +30,7 @@ export const useAgentSyncModule = () => {
   const agents = ref<AgentSummary[]>([])
   const groups = ref<AgentGroup[]>([])
   const apiConfigs = ref<AgentApiConfig[]>([])
+  const syncTasks = ref<SyncTask[]>([])
 
   const groupsLoading = ref(false)
   const groupsError = ref('')
@@ -74,6 +78,11 @@ export const useAgentSyncModule = () => {
   const apiSyncLoading = ref(false)
   const apiSyncError = ref('')
   const apiSyncSuccess = ref('')
+  const syncTasksLoading = ref(false)
+  const syncTasksError = ref('')
+  const agentUserSyncLoadingId = ref('')
+  const agentUserSyncError = ref('')
+  const agentUserSyncSuccess = ref('')
 
   const showApiDeleteModal = ref(false)
   const apiDeleteTarget = ref<AgentApiConfig | null>(null)
@@ -175,6 +184,19 @@ export const useAgentSyncModule = () => {
     } catch (err) {
       apiConfigError.value = err instanceof Error ? err.message : '加载失败'
       apiConfigs.value = []
+    }
+  }
+
+  const loadSyncTasks = async () => {
+    syncTasksLoading.value = true
+    syncTasksError.value = ''
+    try {
+      syncTasks.value = await fetchAgentSyncTasks()
+    } catch (err) {
+      syncTasksError.value = err instanceof Error ? err.message : '加载任务失败'
+      syncTasks.value = []
+    } finally {
+      syncTasksLoading.value = false
     }
   }
 
@@ -610,7 +632,7 @@ export const useAgentSyncModule = () => {
     toggleWorkspaceAllApps(activeWorkspace.value.id)
   }
 
-  const confirmApiSync = async () => {
+  const confirmApiSync = async (syncChatUsers = false) => {
     if (!apiSyncTarget.value) return
     apiSyncError.value = ''
     apiSyncSuccess.value = ''
@@ -646,17 +668,36 @@ export const useAgentSyncModule = () => {
     try {
       const result = await syncFit2CloudByConfig(apiSyncTarget.value.id, {
         workspaces: workspacePayloads,
+        sync_chat_users: syncChatUsers,
       })
       apiSyncSuccess.value = `同步完成：新增 ${result.imported}，更新 ${result.updated}。`
+      if (result.tasks?.length) {
+        apiSyncSuccess.value += ` 已创建 ${result.tasks.length} 个对话用户同步任务。`
+      }
       if (result.errors?.length) {
         apiSyncError.value = result.errors.slice(0, 3).join('；')
       }
       closeApiSyncModal()
-      await loadAgents()
+      await Promise.all([loadAgents(), loadSyncTasks()])
     } catch (err) {
       apiSyncError.value = err instanceof Error ? err.message : '同步失败'
     } finally {
       apiSyncLoading.value = false
+    }
+  }
+
+  const handleSyncAgentUsers = async (agent: AgentSummary) => {
+    agentUserSyncLoadingId.value = agent.id
+    agentUserSyncError.value = ''
+    agentUserSyncSuccess.value = ''
+    try {
+      const task = await syncAgentChatUsers(agent.id)
+      agentUserSyncSuccess.value = `已为 ${agent.name} 创建同步任务 ${task.id}。`
+      await loadSyncTasks()
+    } catch (err) {
+      agentUserSyncError.value = err instanceof Error ? err.message : '创建同步任务失败'
+    } finally {
+      agentUserSyncLoadingId.value = ''
     }
   }
 
@@ -671,7 +712,7 @@ export const useAgentSyncModule = () => {
   }
 
   const initialize = async () => {
-    await Promise.all([loadAgents(), loadAgentGroups(), loadApiConfigs()])
+    await Promise.all([loadAgents(), loadAgentGroups(), loadApiConfigs(), loadSyncTasks()])
     document.addEventListener('click', handleDocumentClick)
   }
 
@@ -684,6 +725,7 @@ export const useAgentSyncModule = () => {
     agents,
     groups,
     apiConfigs,
+    syncTasks,
     groupsLoading,
     groupsError,
     groupLoading,
@@ -713,6 +755,11 @@ export const useAgentSyncModule = () => {
     apiSyncLoading,
     apiSyncError,
     apiSyncSuccess,
+    syncTasksLoading,
+    syncTasksError,
+    agentUserSyncLoadingId,
+    agentUserSyncError,
+    agentUserSyncSuccess,
     showApiDeleteModal,
     apiDeleteTarget,
     editingApiConfigId,
@@ -739,6 +786,7 @@ export const useAgentSyncModule = () => {
     openAgentGroupDropdown,
     focusAgentGroupInput,
     removeAgentGroup,
+    selectAgentGroup,
     handleAgentGroupEnter,
     handleCreateAgentAdmin,
     openDeleteAgent,
@@ -763,6 +811,8 @@ export const useAgentSyncModule = () => {
     toggleActiveWorkspaceAllApps,
     toggleWorkspaceAppSelection,
     confirmApiSync,
+    handleSyncAgentUsers,
+    loadSyncTasks,
     initialize,
     dispose,
   }

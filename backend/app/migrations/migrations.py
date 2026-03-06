@@ -156,6 +156,18 @@ def ensure_schema() -> None:
                 conn.execute(text("ALTER TABLE agents ADD COLUMN external_id VARCHAR(255)"))
             if "workspace_id" not in columns:
                 conn.execute(text("ALTER TABLE agents ADD COLUMN workspace_id VARCHAR(255)"))
+            if "workspace_name" not in columns:
+                conn.execute(text("ALTER TABLE agents ADD COLUMN workspace_name VARCHAR(255)"))
+            conn.execute(
+                text(
+                    "UPDATE agents "
+                    "SET workspace_name = COALESCE(workspace_name, '') "
+                    "WHERE workspace_name IS NULL"
+                )
+            )
+            conn.execute(text("ALTER TABLE agents ALTER COLUMN workspace_name SET NOT NULL"))
+            if "sync_config_id" not in columns:
+                conn.execute(text("ALTER TABLE agents ADD COLUMN sync_config_id INTEGER"))
             if "proxy_id" not in columns:
                 conn.execute(text("ALTER TABLE agents ADD COLUMN proxy_id VARCHAR(64)"))
             conn.execute(
@@ -208,6 +220,115 @@ def ensure_schema() -> None:
                     "WHERE token IS NULL"
                 )
             )
+
+        if "chat_users" in tables:
+            columns = _column_names(inspector, "chat_users")
+            for name, ddl in (
+                ("username", "VARCHAR(255)"),
+                ("email", "VARCHAR(255)"),
+                ("phone", "VARCHAR(255)"),
+                ("is_active", "BOOLEAN"),
+                ("nick_name", "VARCHAR(255)"),
+                ("source", "VARCHAR(64)"),
+                ("create_time", "VARCHAR(64)"),
+                ("update_time", "VARCHAR(64)"),
+                ("user_group_ids", "JSON"),
+                ("user_group_names", "JSON"),
+                ("raw_payload", "JSON"),
+            ):
+                if name not in columns:
+                    conn.execute(text(f"ALTER TABLE chat_users ADD COLUMN {name} {ddl}"))
+            conn.execute(text("UPDATE chat_users SET email = COALESCE(email, '') WHERE email IS NULL"))
+            conn.execute(text("UPDATE chat_users SET phone = COALESCE(phone, '') WHERE phone IS NULL"))
+            conn.execute(text("UPDATE chat_users SET nick_name = COALESCE(nick_name, '') WHERE nick_name IS NULL"))
+            conn.execute(text("UPDATE chat_users SET source = COALESCE(source, '') WHERE source IS NULL"))
+            conn.execute(text("UPDATE chat_users SET create_time = COALESCE(create_time, '') WHERE create_time IS NULL"))
+            conn.execute(text("UPDATE chat_users SET update_time = COALESCE(update_time, '') WHERE update_time IS NULL"))
+            conn.execute(text("UPDATE chat_users SET user_group_ids = '[]'::json WHERE user_group_ids IS NULL"))
+            conn.execute(text("UPDATE chat_users SET user_group_names = '[]'::json WHERE user_group_names IS NULL"))
+            conn.execute(text("UPDATE chat_users SET raw_payload = '{}'::json WHERE raw_payload IS NULL"))
+
+        if "chat_user_groups" in tables:
+            columns = _column_names(inspector, "chat_user_groups")
+            if "raw_payload" not in columns:
+                conn.execute(text("ALTER TABLE chat_user_groups ADD COLUMN raw_payload JSON"))
+            conn.execute(text("UPDATE chat_user_groups SET raw_payload = '{}'::json WHERE raw_payload IS NULL"))
+
+        if "chat_user_group_members" in tables:
+            columns = _column_names(inspector, "chat_user_group_members")
+            if "group_name" not in columns:
+                conn.execute(text("ALTER TABLE chat_user_group_members ADD COLUMN group_name VARCHAR(255)"))
+            conn.execute(
+                text(
+                    "UPDATE chat_user_group_members "
+                    "SET group_name = COALESCE(group_name, '') "
+                    "WHERE group_name IS NULL"
+                )
+            )
+            conn.execute(text("ALTER TABLE chat_user_group_members ALTER COLUMN group_name SET NOT NULL"))
+
+        if "agent_chat_user_accesses" in tables:
+            columns = _column_names(inspector, "agent_chat_user_accesses")
+            for name, ddl in (
+                ("group_name", "VARCHAR(255)"),
+                ("username", "VARCHAR(255)"),
+                ("nick_name", "VARCHAR(255)"),
+                ("is_active", "BOOLEAN"),
+                ("source", "VARCHAR(64)"),
+                ("create_time", "VARCHAR(64)"),
+                ("update_time", "VARCHAR(64)"),
+                ("is_auth", "BOOLEAN"),
+                ("raw_payload", "JSON"),
+            ):
+                if name not in columns:
+                    conn.execute(text(f"ALTER TABLE agent_chat_user_accesses ADD COLUMN {name} {ddl}"))
+            conn.execute(text("UPDATE agent_chat_user_accesses SET group_name = COALESCE(group_name, '') WHERE group_name IS NULL"))
+            conn.execute(text("UPDATE agent_chat_user_accesses SET username = COALESCE(username, '') WHERE username IS NULL"))
+            conn.execute(text("UPDATE agent_chat_user_accesses SET nick_name = COALESCE(nick_name, '') WHERE nick_name IS NULL"))
+            conn.execute(text("UPDATE agent_chat_user_accesses SET source = COALESCE(source, '') WHERE source IS NULL"))
+            conn.execute(text("UPDATE agent_chat_user_accesses SET create_time = COALESCE(create_time, '') WHERE create_time IS NULL"))
+            conn.execute(text("UPDATE agent_chat_user_accesses SET update_time = COALESCE(update_time, '') WHERE update_time IS NULL"))
+            conn.execute(text("UPDATE agent_chat_user_accesses SET is_auth = COALESCE(is_auth, FALSE) WHERE is_auth IS NULL"))
+            conn.execute(text("UPDATE agent_chat_user_accesses SET raw_payload = '{}'::json WHERE raw_payload IS NULL"))
+
+        if "sync_tasks" in tables:
+            columns = _column_names(inspector, "sync_tasks")
+            for name, ddl in (
+                ("task_type", "VARCHAR(64)"),
+                ("status", "VARCHAR(32)"),
+                ("config_id", "INTEGER"),
+                ("agent_id", "VARCHAR(64)"),
+                ("agent_name", "VARCHAR(255)"),
+                ("workspace_id", "VARCHAR(255)"),
+                ("workspace_name", "VARCHAR(255)"),
+                ("external_id", "VARCHAR(255)"),
+                ("total_steps", "INTEGER"),
+                ("completed_steps", "INTEGER"),
+                ("total_records", "INTEGER"),
+                ("processed_records", "INTEGER"),
+                ("message", "TEXT"),
+                ("error", "TEXT"),
+                ("celery_task_id", "VARCHAR(255)"),
+                ("created_by", "INTEGER"),
+                ("started_at", "TIMESTAMP WITH TIME ZONE"),
+                ("finished_at", "TIMESTAMP WITH TIME ZONE"),
+                ("updated_at", "TIMESTAMP WITH TIME ZONE"),
+            ):
+                if name not in columns:
+                    conn.execute(text(f"ALTER TABLE sync_tasks ADD COLUMN {name} {ddl}"))
+            conn.execute(text("UPDATE sync_tasks SET task_type = COALESCE(task_type, 'agent_chat_user_sync') WHERE task_type IS NULL"))
+            conn.execute(text("UPDATE sync_tasks SET status = COALESCE(status, 'pending') WHERE status IS NULL"))
+            conn.execute(text("UPDATE sync_tasks SET agent_name = COALESCE(agent_name, '') WHERE agent_name IS NULL"))
+            conn.execute(text("UPDATE sync_tasks SET workspace_id = COALESCE(workspace_id, '') WHERE workspace_id IS NULL"))
+            conn.execute(text("UPDATE sync_tasks SET workspace_name = COALESCE(workspace_name, '') WHERE workspace_name IS NULL"))
+            conn.execute(text("UPDATE sync_tasks SET external_id = COALESCE(external_id, '') WHERE external_id IS NULL"))
+            conn.execute(text("UPDATE sync_tasks SET total_steps = COALESCE(total_steps, 0) WHERE total_steps IS NULL"))
+            conn.execute(text("UPDATE sync_tasks SET completed_steps = COALESCE(completed_steps, 0) WHERE completed_steps IS NULL"))
+            conn.execute(text("UPDATE sync_tasks SET total_records = COALESCE(total_records, 0) WHERE total_records IS NULL"))
+            conn.execute(text("UPDATE sync_tasks SET processed_records = COALESCE(processed_records, 0) WHERE processed_records IS NULL"))
+            conn.execute(text("UPDATE sync_tasks SET message = COALESCE(message, '') WHERE message IS NULL"))
+            conn.execute(text("UPDATE sync_tasks SET error = COALESCE(error, '') WHERE error IS NULL"))
+            conn.execute(text("UPDATE sync_tasks SET celery_task_id = COALESCE(celery_task_id, '') WHERE celery_task_id IS NULL"))
 
         if "models" in tables:
             columns = _column_names(inspector, "models")

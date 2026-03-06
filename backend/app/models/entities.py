@@ -108,6 +108,8 @@ class Agent(Base):
     is_synced = Column(Boolean, nullable=False, default=False)
     external_id = Column(String(255), nullable=True)
     workspace_id = Column(String(255), nullable=True)
+    workspace_name = Column(String(255), nullable=False, default="")
+    sync_config_id = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
@@ -127,6 +129,121 @@ class AgentApiConfig(Base):
     base_url = Column(String(255), unique=True, nullable=False, index=True)
     token = Column(String(1024), nullable=False, default="")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ChatUser(Base):
+    __tablename__ = "chat_users"
+
+    id = Column(String(255), primary_key=True, index=True)
+    username = Column(String(255), nullable=False, index=True)
+    email = Column(String(255), nullable=False, default="", index=True)
+    phone = Column(String(255), nullable=False, default="")
+    is_active = Column(Boolean, nullable=False, default=True)
+    nick_name = Column(String(255), nullable=False, default="")
+    source = Column(String(64), nullable=False, default="", index=True)
+    create_time = Column(String(64), nullable=False, default="")
+    update_time = Column(String(64), nullable=False, default="")
+    user_group_ids = Column(JSON, nullable=False, default=list)
+    user_group_names = Column(JSON, nullable=False, default=list)
+    raw_payload = Column(JSON, nullable=False, default=dict)
+    synced_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class ChatUserGroup(Base):
+    __tablename__ = "chat_user_groups"
+
+    id = Column(String(255), primary_key=True, index=True)
+    name = Column(String(255), nullable=False, index=True)
+    raw_payload = Column(JSON, nullable=False, default=dict)
+    synced_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class ChatUserGroupMember(Base):
+    __tablename__ = "chat_user_group_members"
+
+    id = Column(Integer, primary_key=True, index=True)
+    group_id = Column(String(255), nullable=False, index=True)
+    group_name = Column(String(255), nullable=False, default="")
+    chat_user_id = Column(String(255), nullable=False, index=True)
+    synced_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("group_id", "chat_user_id", name="uq_chat_user_group_member"),
+    )
+
+
+class AgentChatUserAccess(Base):
+    __tablename__ = "agent_chat_user_accesses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    agent_id = Column(String(64), nullable=False, index=True)
+    chat_user_id = Column(String(255), nullable=False, index=True)
+    group_id = Column(String(255), nullable=False, index=True)
+    group_name = Column(String(255), nullable=False, default="")
+    username = Column(String(255), nullable=False, default="")
+    nick_name = Column(String(255), nullable=False, default="")
+    is_active = Column(Boolean, nullable=False, default=True)
+    source = Column(String(64), nullable=False, default="", index=True)
+    create_time = Column(String(64), nullable=False, default="")
+    update_time = Column(String(64), nullable=False, default="")
+    is_auth = Column(Boolean, nullable=False, default=False)
+    raw_payload = Column(JSON, nullable=False, default=dict)
+    synced_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("agent_id", "group_id", "chat_user_id", name="uq_agent_chat_user_access"),
+    )
+
+
+class SyncTask(Base):
+    __tablename__ = "sync_tasks"
+
+    id = Column(String(64), primary_key=True, index=True, default=lambda: uuid4().hex)
+    task_type = Column(String(64), nullable=False, default="agent_chat_user_sync")
+    status = Column(String(32), nullable=False, default="pending", index=True)
+    config_id = Column(Integer, nullable=True, index=True)
+    agent_id = Column(String(64), nullable=True, index=True)
+    agent_name = Column(String(255), nullable=False, default="")
+    workspace_id = Column(String(255), nullable=False, default="")
+    workspace_name = Column(String(255), nullable=False, default="")
+    external_id = Column(String(255), nullable=False, default="")
+    total_steps = Column(Integer, nullable=False, default=0)
+    completed_steps = Column(Integer, nullable=False, default=0)
+    total_records = Column(Integer, nullable=False, default=0)
+    processed_records = Column(Integer, nullable=False, default=0)
+    message = Column(Text, nullable=False, default="")
+    error = Column(Text, nullable=False, default="")
+    celery_task_id = Column(String(255), nullable=False, default="")
+    created_by = Column(Integer, nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class AuthProviderConfig(Base):

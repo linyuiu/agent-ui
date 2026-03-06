@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session, load_only
 
 from .. import models, schemas
@@ -10,16 +11,16 @@ from ..permissions import (
     is_super_admin,
     require_menu_action,
 )
+from ..services.chat_user_sync import build_agent_chat_user_view
 from ..services.serializers import agent_detail, agent_summary
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
 
-@router.get("", response_model=list[schemas.AgentSummary])
-def list_agents(
-    include_description: bool = True,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+def _list_agents_sync(
+    db: Session,
+    include_description: bool,
+    current_user: models.User,
 ) -> list[schemas.AgentSummary]:
     require_menu_action(db, current_user, action="view", menu_id="agents")
     query = db.query(models.Agent)
@@ -37,7 +38,7 @@ def list_agents(
                 models.Agent.source_type,
                 models.Agent.is_synced,
             )
-    )
+        )
     agents = query.all()
 
     if is_super_admin(current_user):
@@ -57,12 +58,7 @@ def list_agents(
     return allowed
 
 
-@router.get("/{agent_id}", response_model=schemas.AgentDetail)
-def get_agent(
-    agent_id: str,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> schemas.AgentDetail:
+def _get_agent_sync(db: Session, agent_id: str, current_user: models.User) -> schemas.AgentDetail:
     require_menu_action(db, current_user, action="view", menu_id="agents")
     agent = db.query(models.Agent).filter(models.Agent.id == agent_id).first()
     if not agent:
@@ -79,3 +75,31 @@ def get_agent(
         raise HTTPException(status_code=403, detail="Forbidden")
 
     return agent_detail(agent)
+
+
+@router.get("", response_model=list[schemas.AgentSummary])
+async def list_agents(
+    include_description: bool = True,
+    current_user: models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[schemas.AgentSummary]:
+    return await db.run_sync(lambda sync_db: _list_agents_sync(sync_db, include_description, current_user))
+
+
+@router.get("/{agent_id}", response_model=schemas.AgentDetail)
+async def get_agent(
+    agent_id: str,
+    current_user: models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> schemas.AgentDetail:
+    return await db.run_sync(lambda sync_db: _get_agent_sync(sync_db, agent_id, current_user))
+
+
+@router.get("/{agent_id}/chat-users", response_model=schemas.AgentChatUserView)
+async def get_agent_chat_users(
+    agent_id: str,
+    current_user: models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> schemas.AgentChatUserView:
+    await db.run_sync(lambda sync_db: _get_agent_sync(sync_db, agent_id, current_user))
+    return await build_agent_chat_user_view(db, agent_id=agent_id)
