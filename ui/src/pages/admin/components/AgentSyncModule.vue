@@ -3,7 +3,7 @@
     <div class="section-header">
       <div>
         <h2>智能体同步</h2>
-        <p>新增智能体、维护分组、配置同步源并查看同步任务进度。</p>
+        <p>新增智能体、维护分组并配置同步源。</p>
       </div>
     </div>
 
@@ -247,40 +247,6 @@
     </div>
   </div>
 
-  <div class="section">
-    <div class="section-header">
-      <div>
-        <h2>同步任务进度</h2>
-        <p>展示对话用户同步任务进度，列表每 5 秒自动刷新。</p>
-      </div>
-    </div>
-
-    <div class="panel">
-      <p v-if="syncTasksLoading" class="state">加载任务中...</p>
-      <p v-if="syncTasksError" class="state error">{{ syncTasksError }}</p>
-      <div v-if="syncTasks.length" class="grid task-grid">
-        <div v-for="task in syncTasks" :key="task.id" class="policy-card task-card">
-          <div class="task-card-head">
-            <div>
-              <h3>{{ task.agent_name || '智能体同步任务' }}</h3>
-              <p>{{ task.workspace_name || task.workspace_id || '未指定工作空间' }}</p>
-            </div>
-            <span class="tag tag-small" :class="taskStatusClass(task.status)">{{ task.status }}</span>
-          </div>
-          <div class="task-progress">
-            <div class="task-progress-track">
-              <span class="task-progress-fill" :style="{ width: `${taskProgress(task)}%` }"></span>
-            </div>
-            <small>{{ task.completed_steps }} / {{ task.total_steps || 0 }}</small>
-          </div>
-          <p class="task-message">{{ task.error || task.message || '等待执行' }}</p>
-          <small class="task-time">创建时间：{{ formatIsoDateTime(task.created_at) }}</small>
-        </div>
-      </div>
-      <p v-else-if="!syncTasksLoading" class="state">暂无同步任务。</p>
-    </div>
-  </div>
-
   <SyncSelectionModal
     :open="showApiSyncModal"
     :sync-workspaces="syncWorkspaces"
@@ -358,17 +324,14 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 import ConfirmDialog from '../../../components/common/ConfirmDialog.vue'
-import { formatIsoDateTime } from '../../../utils/text-format'
 import SyncSelectionModal from './SyncSelectionModal.vue'
 import { useAgentSyncModule } from '../composables/useAgentSyncModule'
-import type { SyncTask } from '../../../services/admin'
 
 const {
   isAdmin,
   agents,
   groups,
   apiConfigs,
-  syncTasks,
   groupsLoading,
   groupsError,
   groupLoading,
@@ -398,8 +361,6 @@ const {
   apiSyncLoading,
   apiSyncError,
   apiSyncSuccess,
-  syncTasksLoading,
-  syncTasksError,
   agentUserSyncLoadingId,
   agentUserSyncError,
   agentUserSyncSuccess,
@@ -455,13 +416,11 @@ const {
   toggleWorkspaceAppSelection,
   confirmApiSync,
   handleSyncAgentUsers,
-  loadSyncTasks,
   initialize,
   dispose,
 } = useAgentSyncModule()
 
 const showSyncChatUserPrompt = ref(false)
-let syncTaskTimer: number | null = null
 
 const openSyncChatUserPrompt = () => {
   showSyncChatUserPrompt.value = true
@@ -481,28 +440,11 @@ const handleSkipSyncChatUsers = async () => {
   await confirmApiSync(false)
 }
 
-const taskProgress = (task: SyncTask) => {
-  if (!task.total_steps) return task.status === 'completed' ? 100 : 0
-  return Math.min(100, Math.round((task.completed_steps / task.total_steps) * 100))
-}
-
-const taskStatusClass = (status: string) => {
-  if (status === 'completed') return 'active'
-  if (status === 'failed') return 'paused'
-  return 'readonly'
-}
-
 onMounted(async () => {
   await initialize()
-  syncTaskTimer = window.setInterval(() => {
-    loadSyncTasks().catch(() => undefined)
-  }, 5000)
 })
 
 onBeforeUnmount(() => {
-  if (syncTaskTimer) {
-    window.clearInterval(syncTaskTimer)
-  }
   dispose()
 })
 </script>

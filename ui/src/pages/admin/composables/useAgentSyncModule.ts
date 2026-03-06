@@ -6,7 +6,6 @@ import {
   createAgentGroup,
   deleteAgentApiConfig,
   deleteAgentGroup,
-  fetchAgentSyncTasks,
   fetchAgentApiConfigs,
   fetchAgentGroups,
   fetchFit2CloudApplications,
@@ -19,7 +18,6 @@ import {
   type AgentGroup,
   type Fit2CloudApplication,
   type Fit2CloudWorkspace,
-  type SyncTask,
 } from '../../../services/admin'
 import { getCurrentRole } from '../../../services/session'
 
@@ -30,7 +28,6 @@ export const useAgentSyncModule = () => {
   const agents = ref<AgentSummary[]>([])
   const groups = ref<AgentGroup[]>([])
   const apiConfigs = ref<AgentApiConfig[]>([])
-  const syncTasks = ref<SyncTask[]>([])
 
   const groupsLoading = ref(false)
   const groupsError = ref('')
@@ -78,8 +75,6 @@ export const useAgentSyncModule = () => {
   const apiSyncLoading = ref(false)
   const apiSyncError = ref('')
   const apiSyncSuccess = ref('')
-  const syncTasksLoading = ref(false)
-  const syncTasksError = ref('')
   const agentUserSyncLoadingId = ref('')
   const agentUserSyncError = ref('')
   const agentUserSyncSuccess = ref('')
@@ -184,19 +179,6 @@ export const useAgentSyncModule = () => {
     } catch (err) {
       apiConfigError.value = err instanceof Error ? err.message : '加载失败'
       apiConfigs.value = []
-    }
-  }
-
-  const loadSyncTasks = async () => {
-    syncTasksLoading.value = true
-    syncTasksError.value = ''
-    try {
-      syncTasks.value = await fetchAgentSyncTasks()
-    } catch (err) {
-      syncTasksError.value = err instanceof Error ? err.message : '加载任务失败'
-      syncTasks.value = []
-    } finally {
-      syncTasksLoading.value = false
     }
   }
 
@@ -678,7 +660,7 @@ export const useAgentSyncModule = () => {
         apiSyncError.value = result.errors.slice(0, 3).join('；')
       }
       closeApiSyncModal()
-      await Promise.all([loadAgents(), loadSyncTasks()])
+      await loadAgents()
     } catch (err) {
       apiSyncError.value = err instanceof Error ? err.message : '同步失败'
     } finally {
@@ -693,7 +675,6 @@ export const useAgentSyncModule = () => {
     try {
       const task = await syncAgentChatUsers(agent.id)
       agentUserSyncSuccess.value = `已为 ${agent.name} 创建同步任务 ${task.id}。`
-      await loadSyncTasks()
     } catch (err) {
       agentUserSyncError.value = err instanceof Error ? err.message : '创建同步任务失败'
     } finally {
@@ -712,7 +693,7 @@ export const useAgentSyncModule = () => {
   }
 
   const initialize = async () => {
-    await Promise.all([loadAgents(), loadAgentGroups(), loadApiConfigs(), loadSyncTasks()])
+    await Promise.all([loadAgents(), loadAgentGroups(), loadApiConfigs()])
     document.addEventListener('click', handleDocumentClick)
   }
 
@@ -725,7 +706,6 @@ export const useAgentSyncModule = () => {
     agents,
     groups,
     apiConfigs,
-    syncTasks,
     groupsLoading,
     groupsError,
     groupLoading,
@@ -755,8 +735,6 @@ export const useAgentSyncModule = () => {
     apiSyncLoading,
     apiSyncError,
     apiSyncSuccess,
-    syncTasksLoading,
-    syncTasksError,
     agentUserSyncLoadingId,
     agentUserSyncError,
     agentUserSyncSuccess,
@@ -812,7 +790,6 @@ export const useAgentSyncModule = () => {
     toggleWorkspaceAppSelection,
     confirmApiSync,
     handleSyncAgentUsers,
-    loadSyncTasks,
     initialize,
     dispose,
   }

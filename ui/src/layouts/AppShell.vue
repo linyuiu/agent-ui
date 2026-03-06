@@ -74,6 +74,14 @@
                     >
                       智能体同步
                     </button>
+                    <button
+                      class="nav-sub-item"
+                      :class="{ active: activeSystemSubmodule === 'sync-progress' }"
+                      type="button"
+                      @click="goToAdminSubmodule('sync-progress')"
+                    >
+                      同步进度
+                    </button>
                   </div>
                 </transition>
               </div>
@@ -185,7 +193,13 @@ const isModelsRoute = computed(() => (route.meta.module as string) === 'models')
 const adminGroupActive = computed(() => activeId.value === 'admin' || isModelsRoute.value)
 const sidebarModules = computed(() => modules.value.filter((item) => item.id !== 'models'))
 
-const adminSubmoduleList = ['user-role', 'permissions', 'auth-settings', 'agent-sync'] as const
+const adminSubmoduleList = [
+  'user-role',
+  'permissions',
+  'auth-settings',
+  'agent-sync',
+  'sync-progress',
+] as const
 type AdminSubmodule = (typeof adminSubmoduleList)[number]
 
 const normalizeAdminSubmodule = (value: unknown): AdminSubmodule => {
