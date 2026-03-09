@@ -105,6 +105,7 @@ def ensure_schema() -> None:
             )
             conn.execute(text("DROP INDEX IF EXISTS ix_users_username"))
             conn.execute(text("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_username_key"))
+            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_users_username ON users (username)"))
 
         if "agents" in tables:
             columns = _column_names(inspector, "agents")
@@ -219,6 +220,11 @@ def ensure_schema() -> None:
                     "SET token = COALESCE(token, '') "
                     "WHERE token IS NULL"
                 )
+            )
+
+        if "auth_provider_configs" in tables:
+            conn.execute(
+                text("CREATE UNIQUE INDEX IF NOT EXISTS ux_auth_provider_configs_protocol ON auth_provider_configs (protocol)")
             )
 
         if "chat_users" in tables:

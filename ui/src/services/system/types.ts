@@ -61,8 +61,8 @@ export type AdminUser = {
   status: string
   source: string
   source_provider?: string
-  source_subject?: string
   workspace: string
+  bound_providers?: string[]
   created_at: string
 }
 
@@ -104,7 +104,7 @@ export type SsoProvider = {
   default_role: string
   default_workspace: string
   config: Record<string, unknown>
-  attribute_mapping: Record<string, unknown>
+  field_mapping: Record<string, unknown>
   created_at: string
 }
 
@@ -117,7 +117,7 @@ export type SsoProviderCreate = {
   default_role?: string
   default_workspace?: string
   config?: Record<string, unknown>
-  attribute_mapping?: Record<string, unknown>
+  field_mapping?: Record<string, unknown>
 }
 
 export type SsoProviderUpdate = Partial<SsoProviderCreate>
@@ -125,7 +125,7 @@ export type SsoProviderUpdate = Partial<SsoProviderCreate>
 export type SsoProviderTestRequest = {
   protocol: SsoProviderProtocol
   config?: Record<string, unknown>
-  attribute_mapping?: Record<string, unknown>
+  field_mapping?: Record<string, unknown>
 }
 
 export type SsoProviderTestResponse = {
@@ -138,6 +138,15 @@ export type SsoProviderPublic = {
   name: string
   protocol: SsoProviderProtocol
   login_mode: 'redirect' | 'password'
+}
+
+export type SsoBindPending = {
+  bind_token: string
+  provider_key: string
+  provider_name: string
+  provider_protocol: SsoProviderProtocol
+  username: string
+  message: string
 }
 
 export type AgentImportRequest = {

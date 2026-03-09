@@ -31,7 +31,7 @@
                   active: selectedWorkspaceIds.includes(workspace.id),
                   focused: activeWorkspaceId === workspace.id,
                 }"
-                @click="$emit('set-active-workspace', workspace)"
+                @click="handleWorkspaceCardClick(workspace)"
               >
                 <input
                   type="checkbox"
@@ -60,6 +60,17 @@
                 <span>全选</span>
               </label>
             </div>
+            <div class="sync-search">
+              <div class="sync-search-box" :class="{ disabled: !activeWorkspace }">
+                <span class="sync-search-label">名称</span>
+                <input
+                  v-model.trim="appSearchQuery"
+                  type="text"
+                  placeholder="请输入"
+                  :disabled="!activeWorkspace"
+                />
+              </div>
+            </div>
             <div class="list">
               <template v-if="activeWorkspace">
                 <div class="workspace-app-group">
@@ -74,9 +85,10 @@
                     {{ workspaceAppErrors[activeWorkspace.id] }}
                   </div>
                   <div v-else-if="!activeWorkspaceApps.length" class="state">暂无智能体</div>
+                  <div v-else-if="!filteredActiveWorkspaceApps.length" class="state">没有匹配的智能体</div>
                   <div v-else class="workspace-app-items">
                     <label
-                      v-for="app in activeWorkspaceApps"
+                      v-for="app in filteredActiveWorkspaceApps"
                       :key="`${activeWorkspace.id}-${app.id}`"
                       class="list-item checkbox-item"
                     >
@@ -120,9 +132,11 @@
 </template>
 
 <script setup lang="ts">
+import { computed, ref, watch } from 'vue'
+
 import type { Fit2CloudApplication, Fit2CloudWorkspace } from '../../../services/admin'
 
-defineProps<{
+const props = defineProps<{
   open: boolean
   syncWorkspaces: Fit2CloudWorkspace[]
   selectedWorkspaceIds: string[]
@@ -142,15 +156,33 @@ defineProps<{
   apiSyncLoading: boolean
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
   (event: 'close'): void
   (event: 'toggle-select-all-workspaces'): void
-  (event: 'set-active-workspace', workspace: Fit2CloudWorkspace): void
   (event: 'toggle-workspace-selection', workspace: Fit2CloudWorkspace): void
   (event: 'toggle-active-workspace-all-apps'): void
   (event: 'toggle-workspace-app-selection', payload: { workspaceId: string; appId: string }): void
   (event: 'confirm-sync'): void
 }>()
+
+const appSearchQuery = ref('')
+
+const filteredActiveWorkspaceApps = computed(() => {
+  const query = appSearchQuery.value.trim().toLowerCase()
+  if (!query) return props.activeWorkspaceApps
+  return props.activeWorkspaceApps.filter((app) => app.name.toLowerCase().includes(query))
+})
+
+const handleWorkspaceCardClick = (workspace: Fit2CloudWorkspace) => {
+  emit('toggle-workspace-selection', workspace)
+}
+
+watch(
+  () => props.activeWorkspaceId,
+  () => {
+    appSearchQuery.value = ''
+  }
+)
 </script>
 
 <style scoped src="./SyncSelectionModal.css"></style>

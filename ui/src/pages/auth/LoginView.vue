@@ -20,7 +20,7 @@
             type="button"
             @click="resetToLocalLogin"
           >
-            切换为本地登录
+            使用本地登录
           </button>
         </div>
 
@@ -28,15 +28,14 @@
           当前使用 {{ selectedPasswordProvider.name }} 登录
         </p>
 
+        <div v-if="bindMessage" class="notice notice--warning">
+          <strong>{{ bindProviderName || '单点登录' }}</strong>
+          <span>{{ bindMessage }}</span>
+        </div>
+
         <label class="field">
           <span>账号</span>
-          <input
-            v-model="account"
-            type="text"
-            placeholder="账号/邮箱"
-            autocomplete="username"
-            required
-          />
+          <input v-model="account" type="text" placeholder="账号/邮箱" autocomplete="username" required />
         </label>
 
         <label class="field">
@@ -56,12 +55,7 @@
               :aria-label="showPassword ? '隐藏密码' : '显示密码'"
               @click="showPassword = !showPassword"
             >
-              <svg
-                v-if="showPassword"
-                class="eye-icon"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
+              <svg v-if="showPassword" class="eye-icon" viewBox="0 0 24 24" aria-hidden="true">
                 <path
                   d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"
                   fill="none"
@@ -70,28 +64,10 @@
                   stroke-linecap="round"
                   stroke-linejoin="round"
                 />
-                <circle
-                  cx="12"
-                  cy="12"
-                  r="3"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.6"
-                />
+                <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.6" />
               </svg>
-              <svg
-                v-else
-                class="eye-icon"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                <path
-                  d="M3 4.5 21 19.5"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.6"
-                  stroke-linecap="round"
-                />
+              <svg v-else class="eye-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3 4.5 21 19.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
                 <path
                   d="M6.6 7.3C4.2 9 2.7 12 2.7 12s3.5 7 10 7c2.2 0 4.1-.7 5.6-1.7"
                   fill="none"
@@ -135,7 +111,8 @@
             :title="provider.name"
             @click="handleProviderShortcut(provider)"
           >
-            {{ providerShortcutLabel(provider) }}
+            <span class="sso-btn__icon">{{ providerIcon(provider) }}</span>
+            <span class="sso-btn__label">{{ providerShortcutLabel(provider) }}</span>
           </button>
         </div>
       </div>
@@ -145,16 +122,17 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { createChatSession } from '../../services/chat-session'
 import {
+  bindSsoIdentity,
   buildSsoStartUrl,
   fetchEnabledSsoProviders,
   ssoPasswordLogin,
+  type SsoBindPending,
   type SsoProviderPublic,
 } from '../../services/sso'
-import { persistAuthSession } from '../../utils/auth-storage'
+import { clearAuthSession, persistAuthSession } from '../../utils/auth-storage'
 
 const route = useRoute()
 const router = useRouter()
@@ -166,10 +144,12 @@ const ssoProviders = ref<SsoProviderPublic[]>([])
 const showPassword = ref(false)
 const loading = ref(false)
 const error = ref('')
+const bindMessage = ref('')
+const bindProviderName = ref('')
+const pendingBindToken = ref('')
 
 const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
-const redirectProviders = computed(() => ssoProviders.value.filter((item) => item.login_mode === 'redirect'))
 const passwordProviders = computed(() => ssoProviders.value.filter((item) => item.login_mode === 'password'))
 const otherProviders = computed(() => ssoProviders.value)
 const selectedPasswordProvider = computed(() =>
@@ -183,12 +163,24 @@ const getRedirectTarget = () =>
 
 const providerShortcutLabel = (provider: SsoProviderPublic) => {
   const protocol = provider.protocol.toUpperCase()
-  if (protocol === 'OAUTH2') return 'OAuth2'
-  return protocol
+  return protocol === 'OAUTH2' ? 'OAuth2' : protocol
+}
+
+const providerIcon = (provider: SsoProviderPublic) => {
+  const protocol = provider.protocol.toUpperCase()
+  if (protocol === 'OAUTH2') return 'OA'
+  return protocol.slice(0, 2)
 }
 
 const resetToLocalLogin = () => {
   passwordProviderKey.value = ''
+}
+
+const setBindPending = (payload: SsoBindPending) => {
+  pendingBindToken.value = payload.bind_token
+  bindMessage.value = payload.message
+  bindProviderName.value = payload.provider_name
+  resetToLocalLogin()
 }
 
 const persistPermissions = async (token: string) => {
@@ -210,10 +202,7 @@ const persistPermissions = async (token: string) => {
 const finalizeLogin = async (payload: { access_token?: string; user?: unknown }) => {
   const token = payload?.access_token || ''
   if (!token) throw new Error('登录响应缺少 token')
-  persistAuthSession({
-    token,
-    user: payload?.user as Record<string, unknown>,
-  })
+  persistAuthSession({ token, user: payload?.user as Record<string, unknown> })
   await persistPermissions(token)
 
   const redirectTarget = getRedirectTarget()
@@ -237,12 +226,16 @@ const handleSubmit = async () => {
 
   try {
     if (passwordProviderKey.value) {
-      const payload = await ssoPasswordLogin({
+      const result = await ssoPasswordLogin({
         provider_key: passwordProviderKey.value,
         account: account.value,
         password: password.value,
       })
-      await finalizeLogin(payload)
+      if (result.type === 'bind_required') {
+        setBindPending(result.payload)
+        return
+      }
+      await finalizeLogin(result.payload)
       return
     }
 
@@ -261,6 +254,20 @@ const handleSubmit = async () => {
       const detail = payload?.detail
       throw new Error(typeof detail === 'string' ? detail : '登录失败，请检查账号密码。')
     }
+
+    const token = String(payload?.access_token || '')
+    if (pendingBindToken.value) {
+      try {
+        await bindSsoIdentity(token, pendingBindToken.value)
+        pendingBindToken.value = ''
+        bindMessage.value = ''
+        bindProviderName.value = ''
+      } catch (err) {
+        clearAuthSession()
+        throw err
+      }
+    }
+
     await finalizeLogin(payload)
   } catch (err) {
     error.value = err instanceof Error ? err.message : '登录失败，请稍后重试。'
@@ -310,8 +317,19 @@ const consumeSsoHashToken = async () => {
   }
 }
 
+const consumeBindQuery = () => {
+  const bindToken = typeof route.query.bind_token === 'string' ? route.query.bind_token : ''
+  const bindText = typeof route.query.bind_message === 'string' ? route.query.bind_message : ''
+  const providerName = typeof route.query.bind_provider === 'string' ? route.query.bind_provider : ''
+  if (!bindToken) return
+  pendingBindToken.value = bindToken
+  bindMessage.value = bindText || '请先使用本地账号登录后完成绑定'
+  bindProviderName.value = providerName
+}
+
 onMounted(async () => {
   ssoProviders.value = await fetchEnabledSsoProviders()
+  consumeBindQuery()
   await consumeSsoHashToken()
 })
 </script>

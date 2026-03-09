@@ -10,7 +10,7 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     account = Column(String(255), unique=True, nullable=False, index=True)
-    username = Column(String(255), nullable=False, index=True)
+    username = Column(String(255), unique=True, nullable=False, index=True)
     email = Column(String(255), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
     role = Column(String(50), nullable=False, default="user")
@@ -20,6 +20,31 @@ class User(Base):
     source_subject = Column(String(255), nullable=False, default="")
     workspace = Column(String(100), nullable=False, default="default")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class UserSsoBinding(Base):
+    __tablename__ = "user_sso_bindings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    provider_key = Column(String(64), nullable=False, index=True)
+    provider_protocol = Column(String(20), nullable=False, default="")
+    external_subject = Column(String(255), nullable=False, index=True)
+    external_username = Column(String(255), nullable=False, default="")
+    external_email = Column(String(255), nullable=False, default="")
+    raw_profile = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("provider_key", "external_subject", name="uq_user_sso_binding_subject"),
+        UniqueConstraint("user_id", "provider_key", name="uq_user_sso_binding_provider"),
+    )
 
 
 class Role(Base):
@@ -258,8 +283,16 @@ class AuthProviderConfig(Base):
     default_role = Column(String(50), nullable=False, default="user")
     default_workspace = Column(String(100), nullable=False, default="default")
     config = Column(JSON, nullable=False, default=dict)
-    attribute_mapping = Column(JSON, nullable=False, default=dict)
+    field_mapping = Column("attribute_mapping", JSON, nullable=False, default=dict)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    @property
+    def attribute_mapping(self) -> dict:
+        return dict(self.field_mapping or {})
+
+    @attribute_mapping.setter
+    def attribute_mapping(self, value: dict | None) -> None:
+        self.field_mapping = value or {}
 
 
 class Model(Base):

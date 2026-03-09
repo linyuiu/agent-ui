@@ -3,17 +3,21 @@ from __future__ import annotations
 from urllib.parse import parse_qsl
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import models, schemas, security
+from ..auth import get_current_user
 from ..db import get_db
 from ..services.sso import (
     PASSWORD_PROTOCOLS,
     REDIRECT_PROTOCOLS,
+    SsoBindRequiredError,
     authenticate_password_provider,
     authenticate_redirect_provider,
+    bind_sso_identity_async,
+    build_frontend_bind_redirect,
     build_frontend_redirect,
     build_provider_public,
     build_redirect_login_url,
@@ -25,20 +29,6 @@ from ..services.sso import (
 )
 
 router = APIRouter(prefix="/auth/sso", tags=["auth_sso"])
-
-
-async def _find_enabled_provider(db: AsyncSession, provider_key: str) -> models.AuthProviderConfig:
-    provider = (
-        await db.execute(
-            select(models.AuthProviderConfig).where(
-                models.AuthProviderConfig.key == provider_key,
-                models.AuthProviderConfig.enabled.is_(True),
-            )
-        )
-    ).scalar_one_or_none()
-    if not provider:
-        raise HTTPException(status_code=404, detail="单点登录配置不存在或未启用")
-    return provider
 
 
 async def _issue_login_response(db: AsyncSession, user: models.User) -> schemas.LoginResponse:
@@ -80,17 +70,31 @@ async def list_enabled_sso_providers(db: AsyncSession = Depends(get_db)) -> list
 async def sso_password_login(
     payload: schemas.SsoPasswordLoginRequest,
     db: AsyncSession = Depends(get_db),
-) -> schemas.LoginResponse:
-    provider = await _find_enabled_provider(db, payload.provider_key)
+):
+    provider = (
+        await db.execute(
+            select(models.AuthProviderConfig).where(
+                models.AuthProviderConfig.key == payload.provider_key,
+                models.AuthProviderConfig.enabled.is_(True),
+            )
+        )
+    ).scalar_one_or_none()
+    if not provider:
+        return JSONResponse(status_code=404, content={"detail": "单点登录配置不存在或未启用"})
     if normalize_protocol(provider.protocol) not in PASSWORD_PROTOCOLS:
-        raise HTTPException(status_code=400, detail="该单点协议不支持账号密码登录")
+        return JSONResponse(status_code=400, content={"detail": "该单点协议不支持账号密码登录"})
 
     profile = await authenticate_password_provider(provider, payload.account, payload.password)
     identity = identity_from_profile(provider, profile)
-    user = await upsert_sso_user_async(db, provider, identity)
+    try:
+        user = await upsert_sso_user_async(db, provider, identity)
+    except SsoBindRequiredError as exc:
+        await db.rollback()
+        return JSONResponse(status_code=409, content=exc.to_schema().model_dump())
     await db.commit()
     await db.refresh(user)
-    return await _issue_login_response(db, user)
+    login_response = await _issue_login_response(db, user)
+    return login_response
 
 
 @router.get("/start/{provider_key}")
@@ -99,9 +103,29 @@ async def start_sso_login(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> RedirectResponse:
-    provider = await _find_enabled_provider(db, provider_key)
+    provider = (
+        await db.execute(
+            select(models.AuthProviderConfig).where(
+                models.AuthProviderConfig.key == provider_key,
+                models.AuthProviderConfig.enabled.is_(True),
+            )
+        )
+    ).scalar_one_or_none()
+    if not provider:
+        return RedirectResponse(url=build_frontend_bind_redirect(
+            bind_token="",
+            target_path="/home/agents",
+            message="单点登录配置不存在或未启用",
+            provider_name=provider_key,
+        ), status_code=307)
     if normalize_protocol(provider.protocol) not in REDIRECT_PROTOCOLS:
-        raise HTTPException(status_code=400, detail="该单点协议不支持跳转登录")
+        return RedirectResponse(url=build_frontend_bind_redirect(
+            bind_token="",
+            target_path="/home/agents",
+            message="该单点协议不支持跳转登录",
+            provider_name=provider.name,
+        ), status_code=307)
+
     redirect = str(request.query_params.get("redirect") or "/home/agents")
     if not redirect.startswith("/"):
         redirect = "/home/agents"
@@ -115,9 +139,34 @@ async def sso_login_callback(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> RedirectResponse:
-    provider = await _find_enabled_provider(db, provider_key)
+    provider = (
+        await db.execute(
+            select(models.AuthProviderConfig).where(
+                models.AuthProviderConfig.key == provider_key,
+                models.AuthProviderConfig.enabled.is_(True),
+            )
+        )
+    ).scalar_one_or_none()
+    if not provider:
+        return RedirectResponse(
+            url=build_frontend_bind_redirect(
+                bind_token="",
+                target_path="/home/agents",
+                message="单点登录配置不存在或未启用",
+                provider_name=provider_key,
+            ),
+            status_code=307,
+        )
     if normalize_protocol(provider.protocol) not in REDIRECT_PROTOCOLS:
-        raise HTTPException(status_code=400, detail="该单点协议不支持回调")
+        return RedirectResponse(
+            url=build_frontend_bind_redirect(
+                bind_token="",
+                target_path="/home/agents",
+                message="该单点协议不支持回调",
+                provider_name=provider.name,
+            ),
+            status_code=307,
+        )
 
     query_params = {key: value for key, value in request.query_params.items()}
     body_params: dict[str, str] = {}
@@ -128,17 +177,38 @@ async def sso_login_callback(
             if "state" not in query_params and "RelayState" in body_params:
                 query_params["state"] = body_params["RelayState"]
 
-    profile = await authenticate_redirect_provider(
-        provider,
-        query_params=query_params,
-        body_params=body_params,
-    )
+    profile = await authenticate_redirect_provider(provider, query_params=query_params, body_params=body_params)
     state = str(query_params.get("state") or "").strip()
     target = parse_state_token(state, provider.key)
     identity = identity_from_profile(provider, profile)
-    user = await upsert_sso_user_async(db, provider, identity)
+    try:
+        user = await upsert_sso_user_async(db, provider, identity, redirect=target)
+    except SsoBindRequiredError as exc:
+        await db.rollback()
+        redirect_url = build_frontend_bind_redirect(
+            bind_token=exc.bind_token,
+            target_path=target,
+            message=exc.message,
+            provider_name=exc.provider_name,
+        )
+        return RedirectResponse(url=redirect_url, status_code=307)
     await db.commit()
     await db.refresh(user)
     login_payload = await _issue_login_response(db, user)
     redirect_url = build_frontend_redirect(login_payload.access_token, target)
     return RedirectResponse(url=redirect_url, status_code=307)
+
+
+@router.post("/bind")
+async def bind_sso_identity(
+    payload: schemas.SsoBindRequest,
+    current_user: models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    binding = await bind_sso_identity_async(db, current_user=current_user, bind_token=payload.bind_token)
+    await db.commit()
+    return {
+        "status": "ok",
+        "provider_key": binding.provider_key,
+        "provider_protocol": binding.provider_protocol,
+    }

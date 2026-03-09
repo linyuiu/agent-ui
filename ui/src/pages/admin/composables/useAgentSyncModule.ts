@@ -510,11 +510,6 @@ export const useAgentSyncModule = () => {
     resetApiSyncState()
   }
 
-  const setActiveWorkspace = async (workspace: Fit2CloudWorkspace) => {
-    activeWorkspaceId.value = workspace.id
-    await loadWorkspaceApplications(workspace.id)
-  }
-
   const loadWorkspaceApplications = async (workspaceId: string) => {
     if (!apiSyncTarget.value) return
     const hasLoaded = Object.prototype.hasOwnProperty.call(workspaceApps.value, workspaceId)
@@ -543,13 +538,6 @@ export const useAgentSyncModule = () => {
       const nextSelectedApps = { ...selectedAppIdsByWorkspace.value }
       delete nextSelectedApps[workspaceId]
       selectedAppIdsByWorkspace.value = nextSelectedApps
-      if (activeWorkspaceId.value === workspaceId) {
-        const nextActive = selectedWorkspaceIds.value[0] || syncWorkspaces.value[0]?.id || ''
-        activeWorkspaceId.value = nextActive
-        if (nextActive) {
-          await loadWorkspaceApplications(nextActive)
-        }
-      }
       return
     }
     selectedWorkspaceIds.value = [...selectedWorkspaceIds.value, workspaceId]
@@ -783,7 +771,6 @@ export const useAgentSyncModule = () => {
     confirmDeleteApiConfig,
     openApiSyncModal,
     closeApiSyncModal,
-    setActiveWorkspace,
     toggleWorkspaceSelection,
     toggleSelectAllWorkspaces,
     toggleActiveWorkspaceAllApps,

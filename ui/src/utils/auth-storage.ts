@@ -24,6 +24,8 @@ export const clearAuthStorage = () => {
   AUTH_KEYS.forEach((key) => localStorage.removeItem(key))
 }
 
+export const clearAuthSession = clearAuthStorage
+
 export const persistAuthSession = ({ token, user, permissions }: PersistAuthSessionParams) => {
   if (token) {
     localStorage.setItem('access_token', token)

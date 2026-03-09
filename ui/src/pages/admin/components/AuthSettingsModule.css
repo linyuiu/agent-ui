@@ -8,8 +8,8 @@
 .sso-tab-row {
   display: flex;
   align-items: center;
-  gap: 20px;
-  padding: 14px 18px 12px;
+  gap: 28px;
+  padding: 14px 18px 0;
   border-bottom: 1px solid rgba(15, 40, 55, 0.12);
   flex-wrap: wrap;
 }
@@ -17,90 +17,139 @@
 .sso-tab {
   border: none;
   background: transparent;
-  color: #4a5a60;
-  font-weight: 700;
-  font-size: 26px;
-  padding: 4px 2px 8px;
+  color: #42545b;
+  font-size: 16px;
+  font-weight: 600;
+  padding: 0 0 12px;
   cursor: pointer;
   border-bottom: 3px solid transparent;
   transition: color 0.2s ease, border-color 0.2s ease;
 }
 
+.sso-tab:hover {
+  color: #0c7e85;
+}
+
 .sso-tab.active {
-  color: #0f6fd9;
+  color: #2e7df6;
   border-bottom-color: #2e7df6;
 }
 
 .sso-form-wrap {
-  padding: 16px 18px 18px;
+  padding: 20px 18px 18px;
   display: grid;
-  gap: 10px;
+  gap: 14px;
+}
+
+.sso-protocol-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.sso-protocol-header h3 {
+  margin: 0 0 6px;
+  font-size: 22px;
+  font-family: 'Space Grotesk', sans-serif;
+}
+
+.sso-protocol-header p {
+  margin: 0;
+  color: #5e6f75;
+  font-size: 14px;
+}
+
+.config-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 74px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: rgba(15, 40, 55, 0.06);
+  color: #617177;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.config-state.configured {
+  background: rgba(15, 179, 185, 0.12);
+  color: #0c7e85;
 }
 
 .sso-form-grid {
   display: grid;
-  grid-template-columns: 1fr;
-  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 18px;
+}
+
+.sso-form-grid .field {
+  min-width: 0;
 }
 
 .sso-form-grid .field label {
+  display: block;
+  margin-bottom: 6px;
+  color: #42545b;
   font-size: 14px;
-  color: #394a50;
   font-weight: 600;
 }
 
+.sso-form-grid .field input,
+.sso-form-grid .field textarea {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid #d6e0e2;
+  padding: 10px 12px;
+  font-size: 14px;
+  box-sizing: border-box;
+  background: #fff;
+  color: #243238;
+}
+
 .sso-form-grid .field input {
-  height: 40px;
+  height: 42px;
+}
+
+.sso-form-grid .field textarea {
+  min-height: 110px;
+  resize: vertical;
+  line-height: 1.55;
+  font-family: 'IBM Plex Sans', sans-serif;
 }
 
 .required {
   color: #f06262;
 }
 
-.sub-title {
-  margin-top: 4px;
-  font-size: 13px;
-  color: #66777e;
-  font-weight: 700;
-}
-
 .full-row {
   grid-column: 1 / -1;
 }
 
-.checkbox-row {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.checkbox-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: #3e5057;
-  font-size: 14px;
-}
-
-.checkbox-item input[type='checkbox'] {
-  width: 16px;
-  height: 16px;
-  accent-color: #0fb3b9;
+.field-hint {
+  margin: 6px 0 0;
+  color: #6a7a80;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .password-field {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
 }
 
 .password-toggle {
-  border: 1px solid rgba(15, 40, 55, 0.2);
-  border-radius: 10px;
+  border: 1px solid rgba(15, 40, 55, 0.16);
+  border-radius: 12px;
   background: #fff;
-  color: #4e5f66;
-  height: 40px;
+  color: #4f5f66;
+  min-width: 68px;
+  height: 42px;
   padding: 0 12px;
   cursor: pointer;
   font-size: 13px;
@@ -112,16 +161,56 @@
   color: #0c7e85;
 }
 
-.button-row {
-  margin-top: 4px;
+.common-settings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 18px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(15, 40, 55, 0.08);
 }
 
-.current-config {
+.checkbox-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  color: #3f5057;
+  font-size: 14px;
+}
+
+.checkbox-item input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  accent-color: #0fb3b9;
+}
+
+.compact-field {
+  max-width: 320px;
+}
+
+.button-row {
   margin-top: 2px;
 }
 
+.current-config {
+  margin-top: 0;
+}
+
 @media (max-width: 900px) {
-  .sso-tab {
-    font-size: 18px;
+  .sso-tab-row {
+    gap: 18px;
+  }
+
+  .sso-form-grid,
+  .common-settings {
+    grid-template-columns: 1fr;
+  }
+
+  .compact-field {
+    max-width: none;
+  }
+
+  .password-field {
+    grid-template-columns: 1fr;
   }
 }

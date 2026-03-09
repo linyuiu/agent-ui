@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import secrets
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote, urlencode
@@ -10,20 +11,20 @@ from xml.etree import ElementTree
 
 import httpx
 from fastapi import HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
 from jose import JWTError, jwt
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
 from .. import models, schemas, security
 from ..config import settings
-from ..permissions import get_user_role_names
+from ..permissions import get_user_role_names_async
 from .chat_user_sync import resolve_sso_chat_user_identity
 
 SSO_PROTOCOLS = {"ldap", "cas", "oidc", "oauth2", "saml2"}
 PASSWORD_PROTOCOLS = {"ldap"}
 REDIRECT_PROTOCOLS = SSO_PROTOCOLS - PASSWORD_PROTOCOLS
-_SSO_STATE_ALGORITHM = "HS256"
+_SSO_TOKEN_ALGORITHM = "HS256"
 _SENSITIVE_KEYWORDS = (
     "secret",
     "password",
@@ -33,6 +34,66 @@ _SENSITIVE_KEYWORDS = (
     "private",
     "credential",
 )
+_DEFAULT_MAPPING_KEYS = {
+    "subject": ("sub", "id", "username", "preferred_username"),
+    "username": ("username", "preferred_username", "name", "uid", "login", "id"),
+    "nick_name": ("name", "displayName", "display_name", "cn", "nick_name", "username"),
+    "email": ("email", "mail", "userPrincipalName"),
+    "account": ("preferred_username", "username", "uid", "login", "id"),
+    "workspace": ("workspace",),
+}
+
+
+class SsoBindRequiredError(Exception):
+    def __init__(
+        self,
+        *,
+        bind_token: str,
+        provider_key: str,
+        provider_name: str,
+        provider_protocol: str,
+        username: str,
+        message: str,
+    ) -> None:
+        self.bind_token = bind_token
+        self.provider_key = provider_key
+        self.provider_name = provider_name
+        self.provider_protocol = provider_protocol
+        self.username = username
+        self.message = message
+        super().__init__(message)
+
+    def to_schema(self) -> schemas.SsoBindPending:
+        return schemas.SsoBindPending(
+            bind_token=self.bind_token,
+            provider_key=self.provider_key,
+            provider_name=self.provider_name,
+            provider_protocol=self.provider_protocol,
+            username=self.username,
+            message=self.message,
+        )
+
+
+@dataclass(slots=True)
+class SsoIdentity:
+    subject: str
+    username: str
+    nick_name: str
+    email: str
+    account: str
+    workspace: str
+    raw_profile: dict[str, Any]
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "subject": self.subject,
+            "username": self.username,
+            "nick_name": self.nick_name,
+            "email": self.email,
+            "account": self.account,
+            "workspace": self.workspace,
+            "raw_profile": self.raw_profile,
+        }
 
 
 def normalize_provider_key(raw: str) -> str:
@@ -40,16 +101,15 @@ def normalize_provider_key(raw: str) -> str:
     return cleaned
 
 
-def provider_login_mode(protocol: str) -> str:
-    protocol = normalize_protocol(protocol)
-    return "password" if protocol in PASSWORD_PROTOCOLS else "redirect"
-
-
 def normalize_protocol(raw: str) -> str:
     protocol = str(raw or "").strip().lower()
     if protocol not in SSO_PROTOCOLS:
         raise HTTPException(status_code=400, detail=f"Unsupported protocol: {protocol}")
     return protocol
+
+
+def provider_login_mode(protocol: str) -> str:
+    return "password" if normalize_protocol(protocol) in PASSWORD_PROTOCOLS else "redirect"
 
 
 def normalize_mapping(raw: dict | None) -> dict[str, str]:
@@ -75,13 +135,37 @@ def mask_sensitive_dict(payload: dict[str, Any]) -> dict[str, Any]:
         lower_key = str(key).lower()
         if any(keyword in lower_key for keyword in _SENSITIVE_KEYWORDS):
             text = str(value or "")
-            if len(text) <= 4:
-                masked[key] = "****"
-            else:
-                masked[key] = f"****{text[-4:]}"
+            masked[key] = "****" if len(text) <= 4 else f"****{text[-4:]}"
             continue
         masked[key] = value
     return masked
+
+
+async def _bound_provider_keys(db: AsyncSession, user_id: int) -> list[str]:
+    rows = (
+        await db.execute(
+            select(models.UserSsoBinding.provider_key)
+            .where(models.UserSsoBinding.user_id == user_id)
+            .order_by(models.UserSsoBinding.provider_key.asc())
+        )
+    ).scalars().all()
+    return [str(item) for item in rows]
+
+
+async def build_user_public_async(db: AsyncSession, user: models.User) -> schemas.UserPublic:
+    return schemas.UserPublic(
+        id=user.id,
+        account=user.account,
+        username=user.username,
+        email=user.email,
+        role=user.role,
+        roles=await get_user_role_names_async(db, user),
+        status=user.status,
+        source=user.source,
+        source_provider=user.source_provider or "local",
+        workspace=user.workspace,
+        bound_providers=await _bound_provider_keys(db, user.id),
+    )
 
 
 def build_provider_out(provider: models.AuthProviderConfig) -> schemas.SsoProviderOut:
@@ -96,7 +180,7 @@ def build_provider_out(provider: models.AuthProviderConfig) -> schemas.SsoProvid
         default_role=provider.default_role or "user",
         default_workspace=provider.default_workspace or "default",
         config=mask_sensitive_dict(dict(provider.config or {})),
-        attribute_mapping=dict(provider.attribute_mapping or {}),
+        field_mapping=dict(provider.field_mapping or {}),
         created_at=provider.created_at,
     )
 
@@ -111,62 +195,61 @@ def build_provider_public(provider: models.AuthProviderConfig) -> schemas.SsoPro
     )
 
 
-def build_user_public(db: Session, user: models.User) -> schemas.UserPublic:
-    roles = get_user_role_names(db, user)
-    return schemas.UserPublic(
-        id=user.id,
-        account=user.account,
-        username=user.username,
-        email=user.email,
-        role=user.role,
-        roles=roles,
-        status=user.status,
-        source=user.source,
-        source_provider=user.source_provider or "local",
-        source_subject=user.source_subject or "",
-        workspace=user.workspace,
-    )
-
-
-def _ensure_role_exists(db: Session, role_name: str) -> str:
+async def _ensure_role_exists(db: AsyncSession, role_name: str) -> str:
     normalized = str(role_name or "").strip() or "user"
-    role = db.query(models.Role).filter(models.Role.name == normalized).first()
+    role = (await db.execute(select(models.Role).where(models.Role.name == normalized))).scalar_one_or_none()
     if role:
         return role.name
-    fallback = db.query(models.Role).filter(models.Role.name == "user").first()
+    fallback = (await db.execute(select(models.Role).where(models.Role.name == "user"))).scalar_one_or_none()
     if fallback:
         return fallback.name
     db.add(models.Role(name="user", description="普通用户"))
-    db.flush()
+    await db.flush()
     return "user"
 
 
-def _set_single_user_role(db: Session, user: models.User, role_name: str) -> None:
-    db.query(models.UserRole).filter(models.UserRole.user_id == user.id).delete(synchronize_session=False)
+async def _set_single_user_role(db: AsyncSession, user: models.User, role_name: str) -> None:
+    existing_rows = (
+        await db.execute(select(models.UserRole).where(models.UserRole.user_id == user.id))
+    ).scalars().all()
+    for row in existing_rows:
+        await db.delete(row)
     db.add(models.UserRole(user_id=user.id, role_name=role_name))
     user.role = role_name
 
 
-def _unique_account(db: Session, preferred: str) -> str:
+async def _unique_account(db: AsyncSession, preferred: str) -> str:
     base = str(preferred or "").strip() or f"sso-{uuid4().hex[:8]}"
-    existing = db.query(models.User).filter(models.User.account == base).first()
-    if not existing:
-        return base
-    for idx in range(1, 1000):
-        candidate = f"{base}-{idx}"
-        existing = db.query(models.User).filter(models.User.account == candidate).first()
-        if not existing:
+    candidate = base
+    suffix = 1
+    while True:
+        existing = (
+            await db.execute(select(models.User.id).where(models.User.account == candidate))
+        ).scalar_one_or_none()
+        if existing is None:
             return candidate
-    return f"{base}-{uuid4().hex[:6]}"
+        candidate = f"{base}-{suffix}"
+        suffix += 1
 
 
-def _safe_email(account: str, email: str | None) -> str:
-    raw = str(email or "").strip()
-    if raw and "@" in raw:
-        return raw
-    local = account.replace(" ", ".").replace("/", ".").strip(".")
-    local = local or f"user-{uuid4().hex[:6]}"
-    return f"{local}@example.com"
+async def _unique_email(db: AsyncSession, preferred: str, username: str) -> str:
+    if preferred and "@" in preferred:
+        base_local, _, base_domain = preferred.partition("@")
+        base_local = base_local or username or f"user-{uuid4().hex[:6]}"
+        base_domain = base_domain or "example.com"
+    else:
+        base_local = username or f"user-{uuid4().hex[:6]}"
+        base_domain = "example.com"
+    candidate = f"{base_local}@{base_domain}"
+    suffix = 1
+    while True:
+        existing = (
+            await db.execute(select(models.User.id).where(models.User.email == candidate))
+        ).scalar_one_or_none()
+        if existing is None:
+            return candidate
+        candidate = f"{base_local}+{suffix}@{base_domain}"
+        suffix += 1
 
 
 def _read_claim(data: dict[str, Any], key: str) -> str:
@@ -180,141 +263,140 @@ def _read_claim(data: dict[str, Any], key: str) -> str:
     return str(value or "").strip()
 
 
-def identity_from_profile(
-    provider: models.AuthProviderConfig,
-    profile: dict[str, Any],
-) -> dict[str, str]:
-    mapping = {
-        "subject": "sub",
-        "account": "preferred_username",
-        "username": "name",
-        "email": "email",
-        "workspace": "workspace",
-    }
-    mapping.update(normalize_mapping(provider.attribute_mapping))
+def _first_claim(data: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = _read_claim(data, key)
+        if value:
+            return value
+    return ""
 
-    subject = _read_claim(profile, mapping["subject"]) or _read_claim(profile, "id")
-    account = _read_claim(profile, mapping["account"]) or _read_claim(profile, "username") or subject
-    username = _read_claim(profile, mapping["username"]) or account or subject
-    email = _read_claim(profile, mapping["email"])
-    workspace = _read_claim(profile, mapping["workspace"]) or provider.default_workspace or "default"
 
+def identity_from_profile(provider: models.AuthProviderConfig, profile: dict[str, Any]) -> dict[str, Any]:
+    protocol = normalize_protocol(provider.protocol)
+    profile = profile if isinstance(profile, dict) else {}
+    config = dict(provider.config or {})
+    mapping = normalize_mapping(dict(provider.field_mapping or {}))
+
+    if protocol == "cas":
+        username = _first_claim(profile, ("username", "user", "sub", "id"))
+        subject = _first_claim(profile, ("sub", "id", "username", "user")) or username
+        nick_name = _first_claim(profile, ("name", "displayName", "display_name", "cn")) or username
+        email = _first_claim(profile, ("email", "mail"))
+        workspace = str(config.get("default_workspace") or provider.default_workspace or "default").strip() or "default"
+        account = username
+    else:
+        subject = _read_claim(profile, mapping.get("subject", "")) or _first_claim(profile, _DEFAULT_MAPPING_KEYS["subject"])
+        username = _read_claim(profile, mapping.get("username", "")) or _first_claim(profile, _DEFAULT_MAPPING_KEYS["username"])
+        nick_name = _read_claim(profile, mapping.get("nick_name", "")) or _first_claim(profile, _DEFAULT_MAPPING_KEYS["nick_name"])
+        email = _read_claim(profile, mapping.get("email", "")) or _first_claim(profile, _DEFAULT_MAPPING_KEYS["email"])
+        account = _read_claim(profile, mapping.get("account", "")) or _first_claim(profile, _DEFAULT_MAPPING_KEYS["account"])
+        workspace = _read_claim(profile, mapping.get("workspace", "")) or _first_claim(profile, _DEFAULT_MAPPING_KEYS["workspace"])
+        workspace = workspace or provider.default_workspace or "default"
+
+    username = str(username or account or subject).strip()
+    subject = str(subject or username or account).strip()
+    account = str(account or username).strip()
+    nick_name = str(nick_name or username).strip()
+    email = str(email or "").strip()
+    workspace = str(workspace or provider.default_workspace or "default").strip() or "default"
+
+    if not username:
+        raise HTTPException(status_code=400, detail="单点返回中缺少用户名")
     if not subject:
-        subject = account or username
-    if not account:
-        account = subject or f"sso-{uuid4().hex[:8]}"
+        raise HTTPException(status_code=400, detail="单点返回中缺少用户标识")
 
-    return {
-        "subject": subject,
-        "account": account,
-        "username": username or account,
-        "email": _safe_email(account, email),
-        "workspace": workspace,
-    }
-
-
-def upsert_sso_user(
-    db: Session,
-    provider: models.AuthProviderConfig,
-    identity: dict[str, str],
-    *,
-    password_hash: str | None = None,
-) -> models.User:
-    provider_protocol = normalize_protocol(provider.protocol)
-    subject = str(identity.get("subject") or "").strip()
-    account = str(identity.get("account") or "").strip()
-    username = str(identity.get("username") or "").strip() or account
-    workspace = str(identity.get("workspace") or provider.default_workspace or "default").strip() or "default"
-    email = _safe_email(account, identity.get("email"))
-
-    existing = None
-    if subject:
-        existing = (
-            db.query(models.User)
-            .filter(
-                models.User.source_provider == provider.key,
-                models.User.source_subject == subject,
-            )
-            .first()
-        )
-    if not existing and account:
-        existing = db.query(models.User).filter(models.User.account == account).first()
-
-    if existing:
-        existing.username = username or existing.username
-        existing.email = email or existing.email
-        existing.workspace = workspace
-        existing.source = provider_protocol
-        existing.source_provider = provider.key
-        existing.source_subject = subject
-        if not existing.password_hash:
-            existing.password_hash = password_hash or security.hash_password(uuid4().hex)
-        db.flush()
-        return existing
-
-    if not provider.auto_create_user:
-        raise HTTPException(status_code=403, detail="该单点配置不允许自动创建用户")
-
-    role_name = _ensure_role_exists(db, provider.default_role or "user")
-    safe_account = _unique_account(db, account)
-
-    user = models.User(
-        account=safe_account,
-        username=username or safe_account,
+    identity = SsoIdentity(
+        subject=subject,
+        username=username,
+        nick_name=nick_name,
         email=email,
-        password_hash=password_hash or security.hash_password(uuid4().hex),
-        role=role_name,
-        status="active",
-        source=provider_protocol,
-        source_provider=provider.key,
-        source_subject=subject,
+        account=account or username,
         workspace=workspace,
+        raw_profile=profile,
     )
-    db.add(user)
-    db.flush()
-    _set_single_user_role(db, user, role_name)
-    db.flush()
-    return user
+    return identity.to_payload()
 
 
 def build_state_token(provider_key: str, redirect: str) -> str:
     now = datetime.now(timezone.utc)
     payload = {
         "provider_key": provider_key,
-        "redirect": redirect,
+        "redirect": redirect if redirect.startswith("/") else "/home/agents",
         "nonce": secrets.token_urlsafe(12),
         "exp": now + timedelta(minutes=10),
     }
-    return jwt.encode(payload, security.SECRET_KEY, algorithm=_SSO_STATE_ALGORITHM)
+    return jwt.encode(payload, security.SECRET_KEY, algorithm=_SSO_TOKEN_ALGORITHM)
 
 
 def parse_state_token(state_token: str, provider_key: str) -> str:
     try:
-        payload = jwt.decode(
-            state_token,
-            security.SECRET_KEY,
-            algorithms=[_SSO_STATE_ALGORITHM],
-        )
+        payload = jwt.decode(state_token, security.SECRET_KEY, algorithms=[_SSO_TOKEN_ALGORITHM])
     except JWTError as exc:
         raise HTTPException(status_code=400, detail="SSO state 校验失败") from exc
-    state_provider = str(payload.get("provider_key") or "").strip()
-    if state_provider != provider_key:
+    if str(payload.get("provider_key") or "").strip() != provider_key:
         raise HTTPException(status_code=400, detail="SSO state provider 不匹配")
     redirect = str(payload.get("redirect") or "/home/agents")
-    if not redirect.startswith("/"):
-        redirect = "/home/agents"
-    return redirect
+    return redirect if redirect.startswith("/") else "/home/agents"
 
 
-def build_callback_url(provider_key: str) -> str:
+def build_callback_url(provider: models.AuthProviderConfig) -> str:
+    configured = str((provider.config or {}).get("callback_url") or "").strip()
+    if configured:
+        return configured
     base = settings.PUBLIC_BASE_URL.rstrip("/")
-    return f"{base}/auth/sso/callback/{quote(provider_key, safe='')}"
+    return f"{base}/auth/sso/callback/{quote(provider.key, safe='')}"
 
 
 def build_frontend_redirect(token: str, target_path: str = "/home/agents") -> str:
     base = settings.FRONTEND_BASE_URL.rstrip("/")
     safe_target = target_path if target_path.startswith("/") else "/home/agents"
-    return f"{base}/login?redirect={quote(safe_target, safe='')}&sso=1#token={quote(token, safe='')}"
+    return f"{base}/login?redirect={quote(safe_target, safe='')}#token={quote(token, safe='')}"
+
+
+def build_frontend_bind_redirect(
+    *,
+    bind_token: str,
+    target_path: str,
+    message: str,
+    provider_name: str,
+) -> str:
+    base = settings.FRONTEND_BASE_URL.rstrip("/")
+    safe_target = target_path if target_path.startswith("/") else "/home/agents"
+    query = urlencode(
+        {
+            "redirect": safe_target,
+            "bind_token": bind_token,
+            "bind_message": message,
+            "bind_provider": provider_name,
+        }
+    )
+    return f"{base}/login?{query}"
+
+
+def create_bind_token(provider: models.AuthProviderConfig, identity: dict[str, Any], redirect: str) -> str:
+    payload = {
+        "provider_key": provider.key,
+        "provider_protocol": normalize_protocol(provider.protocol),
+        "provider_name": provider.name,
+        "redirect": redirect if redirect.startswith("/") else "/home/agents",
+        "subject": str(identity.get("subject") or "").strip(),
+        "username": str(identity.get("username") or "").strip(),
+        "nick_name": str(identity.get("nick_name") or identity.get("username") or "").strip(),
+        "email": str(identity.get("email") or "").strip(),
+        "account": str(identity.get("account") or identity.get("username") or "").strip(),
+        "workspace": str(identity.get("workspace") or provider.default_workspace or "default").strip() or "default",
+        "raw_profile": dict(identity.get("raw_profile") or {}),
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=15),
+    }
+    return jwt.encode(payload, security.SECRET_KEY, algorithm=_SSO_TOKEN_ALGORITHM)
+
+
+def parse_bind_token(bind_token: str) -> dict[str, Any]:
+    try:
+        payload = jwt.decode(bind_token, security.SECRET_KEY, algorithms=[_SSO_TOKEN_ALGORITHM])
+    except JWTError as exc:
+        raise HTTPException(status_code=400, detail="绑定令牌已失效，请重新发起单点登录") from exc
+    return payload
 
 
 async def _http_json(
@@ -362,7 +444,7 @@ async def build_redirect_login_url(provider: models.AuthProviderConfig, redirect
     protocol = normalize_protocol(provider.protocol)
     config = dict(provider.config or {})
     state = build_state_token(provider.key, redirect)
-    callback_url = build_callback_url(provider.key)
+    callback_url = build_callback_url(provider)
 
     if protocol in {"oidc", "oauth2"}:
         authorize_url, _ = await _get_oidc_endpoints(config)
@@ -380,9 +462,9 @@ async def build_redirect_login_url(provider: models.AuthProviderConfig, redirect
         return f"{authorize_url}?{urlencode(query)}"
 
     if protocol == "cas":
-        cas_base_url = str(config.get("cas_base_url") or "").strip().rstrip("/")
+        cas_base_url = str(config.get("cas_base_url") or config.get("idp_uri") or "").strip().rstrip("/")
         if not cas_base_url:
-            raise HTTPException(status_code=400, detail="CAS 配置缺少 cas_base_url")
+            raise HTTPException(status_code=400, detail="CAS 配置缺少 idp_uri")
         login_url = str(config.get("login_url") or f"{cas_base_url}/login").strip()
         service_url = f"{callback_url}?state={quote(state, safe='')}"
         return f"{login_url}?{urlencode({'service': service_url})}"
@@ -393,8 +475,7 @@ async def build_redirect_login_url(provider: models.AuthProviderConfig, redirect
             raise HTTPException(status_code=400, detail="SAML2 配置缺少 sso_url")
         relay_key = str(config.get("relay_state_key") or "RelayState").strip() or "RelayState"
         acs_key = str(config.get("acs_key") or "acs").strip() or "acs"
-        params = {relay_key: state, acs_key: callback_url}
-        return f"{sso_url}?{urlencode(params)}"
+        return f"{sso_url}?{urlencode({relay_key: state, acs_key: callback_url})}"
 
     raise HTTPException(status_code=400, detail="该协议不支持跳转登录")
 
@@ -409,8 +490,7 @@ def _decode_id_token_claims(id_token: str) -> dict[str, Any]:
 async def _exchange_oidc_code(provider: models.AuthProviderConfig, code: str) -> dict[str, Any]:
     config = dict(provider.config or {})
     _, token_url = await _get_oidc_endpoints(config)
-    callback_url = build_callback_url(provider.key)
-
+    callback_url = build_callback_url(provider)
     payload = {
         "grant_type": "authorization_code",
         "code": code,
@@ -418,8 +498,12 @@ async def _exchange_oidc_code(provider: models.AuthProviderConfig, code: str) ->
         "client_id": str(config.get("client_id") or "").strip(),
         "client_secret": str(config.get("client_secret") or "").strip(),
     }
-    headers = {"accept": "application/json"}
-    token_data = await _http_json(token_url, method="POST", data=payload, headers=headers)
+    token_data = await _http_json(
+        token_url,
+        method="POST",
+        data=payload,
+        headers={"accept": "application/json"},
+    )
     profile: dict[str, Any] = {}
     id_token = str(token_data.get("id_token") or "").strip()
     if id_token:
@@ -468,12 +552,11 @@ def _parse_cas_xml(xml_text: str) -> dict[str, Any]:
 
 async def _validate_cas_ticket(provider: models.AuthProviderConfig, ticket: str, state: str) -> dict[str, Any]:
     config = dict(provider.config or {})
-    cas_base_url = str(config.get("cas_base_url") or "").strip().rstrip("/")
+    cas_base_url = str(config.get("cas_base_url") or config.get("idp_uri") or "").strip().rstrip("/")
     if not cas_base_url:
-        raise HTTPException(status_code=400, detail="CAS 配置缺少 cas_base_url")
+        raise HTTPException(status_code=400, detail="CAS 配置缺少 idp_uri")
     validate_url = str(config.get("validate_url") or f"{cas_base_url}/serviceValidate").strip()
-    service_url = f"{build_callback_url(provider.key)}?state={quote(state, safe='')}"
-
+    service_url = f"{build_callback_url(provider)}?state={quote(state, safe='')}"
     async with httpx.AsyncClient(timeout=20.0) as client:
         resp = await client.get(validate_url, params={"service": service_url, "ticket": ticket})
     if resp.status_code >= 400:
@@ -485,22 +568,16 @@ def _parse_saml_response(raw: str) -> dict[str, Any]:
     if not raw:
         raise HTTPException(status_code=400, detail="SAMLResponse 为空")
     try:
-        decoded = base64.b64decode(raw)
-        xml_text = decoded.decode("utf-8")
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail="SAMLResponse 解码失败") from exc
-
-    try:
+        xml_text = base64.b64decode(raw).decode("utf-8")
         root = ElementTree.fromstring(xml_text)
     except Exception as exc:
-        raise HTTPException(status_code=400, detail="SAMLResponse XML 解析失败") from exc
+        raise HTTPException(status_code=400, detail="SAMLResponse 解析失败") from exc
 
     profile: dict[str, Any] = {}
     name_id = root.findtext(".//{*}NameID")
     if name_id:
         profile["sub"] = name_id.strip()
         profile["username"] = name_id.strip()
-
     for attr in root.findall(".//{*}Attribute"):
         name = str(attr.attrib.get("Name") or "").strip()
         if not name:
@@ -513,7 +590,6 @@ def _parse_saml_response(raw: str) -> dict[str, Any]:
         if not values:
             continue
         profile[name] = values[0] if len(values) == 1 else values
-
     if not profile:
         raise HTTPException(status_code=400, detail="SAML2 未返回有效用户")
     return profile
@@ -541,36 +617,20 @@ def _authenticate_password_provider_sync(
 
     bind_dn = str(config.get("bind_dn") or "").strip()
     bind_password = str(config.get("bind_password") or "").strip()
-    user_filter_tpl = str(config.get("user_filter") or "").strip()
-    if not user_filter_tpl:
-        user_filter_tpl = f"({account_attr}={{account}})"
+    user_filter_tpl = str(config.get("user_filter") or "").strip() or f"({account_attr}={{account}})"
     escaped_account = escape_filter_chars(str(account or "").strip())
     user_filter = user_filter_tpl.replace("{account}", escaped_account)
 
     server = Server(server_url, get_info=ALL)
     try:
-        if bind_dn:
-            admin_conn = Connection(server, user=bind_dn, password=bind_password, auto_bind=True)
-        else:
-            admin_conn = Connection(server, auto_bind=True)
-        admin_conn.search(
-            search_base=base_dn,
-            search_filter=user_filter,
-            attributes=["*", "+"],
-            size_limit=1,
-        )
+        admin_conn = Connection(server, user=bind_dn, password=bind_password, auto_bind=True) if bind_dn else Connection(server, auto_bind=True)
+        admin_conn.search(search_base=base_dn, search_filter=user_filter, attributes=["*", "+"], size_limit=1)
         if not admin_conn.entries:
             raise HTTPException(status_code=401, detail="LDAP 用户不存在")
         entry = admin_conn.entries[0]
         user_dn = str(entry.entry_dn)
         if not user_dn:
             raise HTTPException(status_code=401, detail="LDAP 用户 DN 无效")
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail="LDAP 查询失败") from exc
-
-    try:
         user_conn = Connection(server, user=user_dn, password=password, auto_bind=True)
         if not user_conn.bound:
             raise HTTPException(status_code=401, detail="LDAP 认证失败")
@@ -579,22 +639,14 @@ def _authenticate_password_provider_sync(
     except Exception as exc:
         raise HTTPException(status_code=401, detail="LDAP 认证失败") from exc
 
-    attributes = {}
-    try:
-        attributes = dict(entry.entry_attributes_as_dict or {})
-    except Exception:
-        attributes = {}
+    attributes = dict(getattr(entry, "entry_attributes_as_dict", {}) or {})
     attributes.setdefault("sub", user_dn)
     attributes.setdefault("username", account)
     attributes.setdefault("preferred_username", account)
     return attributes
 
 
-async def authenticate_password_provider(
-    provider: models.AuthProviderConfig,
-    account: str,
-    password: str,
-) -> dict[str, Any]:
+async def authenticate_password_provider(provider: models.AuthProviderConfig, account: str, password: str) -> dict[str, Any]:
     return await run_in_threadpool(_authenticate_password_provider_sync, provider, account, password)
 
 
@@ -605,7 +657,7 @@ async def authenticate_redirect_provider(
     body_params: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     protocol = normalize_protocol(provider.protocol)
-    state = str(query_params.get("state") or body_params and body_params.get("RelayState") or "").strip()
+    state = str(query_params.get("state") or (body_params or {}).get("RelayState") or "").strip()
     if not state:
         raise HTTPException(status_code=400, detail="缺少 state 参数")
 
@@ -614,108 +666,220 @@ async def authenticate_redirect_provider(
         if not code:
             raise HTTPException(status_code=400, detail="缺少授权 code")
         return await _exchange_oidc_code(provider, code)
-
     if protocol == "cas":
         ticket = str(query_params.get("ticket") or "").strip()
         if not ticket:
             raise HTTPException(status_code=400, detail="缺少 CAS ticket")
         return await _validate_cas_ticket(provider, ticket, state)
-
     if protocol == "saml2":
-        saml_response = str(query_params.get("SAMLResponse") or "").strip()
-        if not saml_response:
-            data = body_params or {}
-            saml_response = str(data.get("SAMLResponse") or "").strip()
+        saml_response = str(query_params.get("SAMLResponse") or (body_params or {}).get("SAMLResponse") or "").strip()
         return _parse_saml_response(saml_response)
-
     raise HTTPException(status_code=400, detail="该协议不支持回调登录")
 
 
-async def build_user_public_async(db: AsyncSession, user: models.User) -> schemas.UserPublic:
-    return await db.run_sync(lambda sync_db: build_user_public(sync_db, user))
-
-
-def _sso_user_needs_password_hash(
-    db: Session,
-    provider: models.AuthProviderConfig,
-    identity: dict[str, str],
-) -> bool:
-    subject = str(identity.get("subject") or "").strip()
-    account = str(identity.get("account") or "").strip()
-
-    existing = None
-    if subject:
-        existing = (
-            db.query(models.User)
-            .filter(
-                models.User.source_provider == provider.key,
-                models.User.source_subject == subject,
+async def _find_binding(
+    db: AsyncSession,
+    *,
+    provider_key: str,
+    subject: str,
+) -> models.UserSsoBinding | None:
+    if not provider_key or not subject:
+        return None
+    return (
+        await db.execute(
+            select(models.UserSsoBinding).where(
+                models.UserSsoBinding.provider_key == provider_key,
+                models.UserSsoBinding.external_subject == subject,
             )
-            .first()
         )
-    if not existing and account:
-        existing = db.query(models.User).filter(models.User.account == account).first()
+    ).scalar_one_or_none()
 
-    if existing:
-        return not bool(existing.password_hash)
-    return bool(provider.auto_create_user)
+
+async def _sync_existing_binding(
+    binding: models.UserSsoBinding,
+    *,
+    provider: models.AuthProviderConfig,
+    identity: dict[str, Any],
+) -> None:
+    binding.provider_protocol = normalize_protocol(provider.protocol)
+    binding.external_username = str(identity.get("username") or "").strip()
+    binding.external_email = str(identity.get("email") or "").strip()
+    binding.raw_profile = dict(identity.get("raw_profile") or {})
+
+
+async def _create_binding(
+    db: AsyncSession,
+    *,
+    user: models.User,
+    provider: models.AuthProviderConfig,
+    identity: dict[str, Any],
+) -> models.UserSsoBinding:
+    provider_key = provider.key
+    subject = str(identity.get("subject") or "").strip()
+    if not subject:
+        raise HTTPException(status_code=400, detail="单点返回中缺少用户标识")
+
+    existing_subject = await _find_binding(db, provider_key=provider_key, subject=subject)
+    if existing_subject:
+        if existing_subject.user_id != user.id:
+            raise HTTPException(status_code=409, detail="该单点账号已绑定到其他系统用户")
+        await _sync_existing_binding(existing_subject, provider=provider, identity=identity)
+        return existing_subject
+
+    existing_provider = (
+        await db.execute(
+            select(models.UserSsoBinding).where(
+                models.UserSsoBinding.user_id == user.id,
+                models.UserSsoBinding.provider_key == provider_key,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing_provider:
+        raise HTTPException(status_code=409, detail="当前账号已绑定该单点系统")
+
+    binding = models.UserSsoBinding(
+        user_id=user.id,
+        provider_key=provider_key,
+        provider_protocol=normalize_protocol(provider.protocol),
+        external_subject=subject,
+        external_username=str(identity.get("username") or "").strip(),
+        external_email=str(identity.get("email") or "").strip(),
+        raw_profile=dict(identity.get("raw_profile") or {}),
+    )
+    db.add(binding)
+    await db.flush()
+    return binding
+
+
+async def _create_user_from_identity(
+    db: AsyncSession,
+    *,
+    provider: models.AuthProviderConfig,
+    identity: dict[str, Any],
+) -> models.User:
+    role_name = await _ensure_role_exists(db, provider.default_role or "user")
+    username = str(identity.get("username") or "").strip()
+    account = await _unique_account(db, str(identity.get("account") or username).strip())
+    email = await _unique_email(db, str(identity.get("email") or "").strip(), username)
+    user = models.User(
+        account=account,
+        username=username,
+        email=email,
+        password_hash=await security.hash_password_async(uuid4().hex),
+        role=role_name,
+        status="active",
+        source=normalize_protocol(provider.protocol),
+        source_provider=provider.key,
+        source_subject=str(identity.get("subject") or "").strip(),
+        workspace=str(identity.get("workspace") or provider.default_workspace or "default").strip() or "default",
+    )
+    db.add(user)
+    await db.flush()
+    await _set_single_user_role(db, user, role_name)
+    return user
+
+
+async def _existing_user_by_username(db: AsyncSession, username: str) -> models.User | None:
+    if not username:
+        return None
+    return (
+        await db.execute(select(models.User).where(models.User.username == username))
+    ).scalar_one_or_none()
 
 
 async def upsert_sso_user_async(
     db: AsyncSession,
     provider: models.AuthProviderConfig,
-    identity: dict[str, str],
+    identity: dict[str, Any],
+    *,
+    redirect: str = "/home/agents",
 ) -> models.User:
     provider_protocol = normalize_protocol(provider.protocol)
-    matched_user, identity_override = await resolve_sso_chat_user_identity(
-        db,
-        provider=provider,
-        identity=identity,
-    )
     merged_identity = dict(identity)
+
+    binding = await _find_binding(
+        db,
+        provider_key=provider.key,
+        subject=str(merged_identity.get("subject") or "").strip(),
+    )
+    if binding:
+        user = await db.get(models.User, binding.user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="绑定的系统用户不存在")
+        await _sync_existing_binding(binding, provider=provider, identity=merged_identity)
+        await db.flush()
+        return user
+
+    matched_user, identity_override = await resolve_sso_chat_user_identity(db, provider=provider, identity=merged_identity)
     if identity_override:
         merged_identity.update(identity_override)
 
     if matched_user:
-        matched_user.account = str(merged_identity.get("account") or matched_user.account).strip() or matched_user.account
-        matched_user.username = (
-            str(merged_identity.get("username") or matched_user.username).strip() or matched_user.username
-        )
-        matched_user.email = _safe_email(matched_user.account, merged_identity.get("email") or matched_user.email)
-        matched_user.workspace = (
-            str(merged_identity.get("workspace") or provider.default_workspace or matched_user.workspace).strip()
-            or matched_user.workspace
-        )
         matched_user.status = "active"
-        matched_user.source = provider_protocol or matched_user.source
-        matched_user.source_provider = (
-            str(merged_identity.get("source_provider") or provider.key or matched_user.source_provider).strip()
-            or matched_user.source_provider
-        )
-        matched_user.source_subject = (
-            str(merged_identity.get("subject") or matched_user.source_subject).strip()
-            or matched_user.source_subject
-        )
-        if not matched_user.password_hash:
-            matched_user.password_hash = await security.hash_password_async(uuid4().hex)
-        await db.commit()
-        await db.refresh(matched_user)
+        if not matched_user.email:
+            matched_user.email = await _unique_email(
+                db,
+                str(merged_identity.get("email") or "").strip(),
+                matched_user.username,
+            )
+        await _create_binding(db, user=matched_user, provider=provider, identity=merged_identity)
+        matched_user.source_provider = matched_user.source_provider or provider.key
+        await db.flush()
         return matched_user
 
-    needs_password_hash = await db.run_sync(
-        lambda sync_db: _sso_user_needs_password_hash(sync_db, provider, merged_identity)
-    )
-    password_hash = None
-    if needs_password_hash:
-        password_hash = await security.hash_password_async(uuid4().hex)
-    user = await db.run_sync(
-        lambda sync_db: upsert_sso_user(
-            sync_db,
-            provider,
-            merged_identity,
-            password_hash=password_hash,
+    username = str(merged_identity.get("username") or "").strip()
+    existing_user = await _existing_user_by_username(db, username)
+    if existing_user:
+        message = (
+            "系统已有本地用户，请先使用本地用户登录后绑定单点系统"
+            if str(existing_user.source or "local").strip().lower() == "local"
+            else "系统已有同名用户，请先使用已有账号登录后绑定单点系统"
         )
-    )
-    await db.commit()
-    await db.refresh(user)
+        raise SsoBindRequiredError(
+            bind_token=create_bind_token(provider, merged_identity, redirect),
+            provider_key=provider.key,
+            provider_name=provider.name,
+            provider_protocol=provider_protocol,
+            username=username,
+            message=message,
+        )
+
+    if not provider.auto_create_user:
+        raise HTTPException(status_code=403, detail="该单点配置不允许自动创建用户")
+
+    user = await _create_user_from_identity(db, provider=provider, identity=merged_identity)
+    await _create_binding(db, user=user, provider=provider, identity=merged_identity)
+    await db.flush()
     return user
+
+
+async def bind_sso_identity_async(
+    db: AsyncSession,
+    *,
+    current_user: models.User,
+    bind_token: str,
+) -> models.UserSsoBinding:
+    payload = parse_bind_token(bind_token)
+    provider_key = str(payload.get("provider_key") or "").strip()
+    provider = (
+        await db.execute(select(models.AuthProviderConfig).where(models.AuthProviderConfig.key == provider_key))
+    ).scalar_one_or_none()
+    if not provider:
+        raise HTTPException(status_code=404, detail="单点配置不存在")
+
+    username = str(payload.get("username") or "").strip()
+    if username and current_user.username != username:
+        raise HTTPException(status_code=409, detail="当前登录账号与待绑定用户名不一致")
+
+    identity = {
+        "subject": str(payload.get("subject") or "").strip(),
+        "username": username or current_user.username,
+        "nick_name": str(payload.get("nick_name") or current_user.username).strip(),
+        "email": str(payload.get("email") or current_user.email).strip(),
+        "account": str(payload.get("account") or username or current_user.account).strip(),
+        "workspace": str(payload.get("workspace") or current_user.workspace).strip() or current_user.workspace,
+        "raw_profile": dict(payload.get("raw_profile") or {}),
+    }
+    binding = await _create_binding(db, user=current_user, provider=provider, identity=identity)
+    await db.flush()
+    return binding

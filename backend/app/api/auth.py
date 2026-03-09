@@ -32,6 +32,12 @@ async def register(payload: schemas.RegisterRequest, db: AsyncSession = Depends(
     if email_existing:
         raise HTTPException(status_code=409, detail="Email already registered")
 
+    username_existing = (
+        await db.execute(select(models.User).where(models.User.username == payload.username))
+    ).scalar_one_or_none()
+    if username_existing:
+        raise HTTPException(status_code=409, detail="Username already registered")
+
     user = models.User(
         account=payload.account,
         username=payload.username,

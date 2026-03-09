@@ -267,7 +267,6 @@
     :api-sync-loading="apiSyncLoading"
     @close="closeApiSyncModal"
     @toggle-select-all-workspaces="toggleSelectAllWorkspaces"
-    @set-active-workspace="setActiveWorkspace"
     @toggle-workspace-selection="toggleWorkspaceSelection"
     @toggle-active-workspace-all-apps="toggleActiveWorkspaceAllApps"
     @toggle-workspace-app-selection="({ workspaceId, appId }) => toggleWorkspaceAppSelection(workspaceId, appId)"
@@ -409,7 +408,6 @@ const {
   confirmDeleteApiConfig,
   openApiSyncModal,
   closeApiSyncModal,
-  setActiveWorkspace,
   toggleWorkspaceSelection,
   toggleSelectAllWorkspaces,
   toggleActiveWorkspaceAllApps,

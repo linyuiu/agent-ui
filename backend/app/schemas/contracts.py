@@ -27,8 +27,8 @@ class UserPublic(BaseModel):
     status: str
     source: str
     source_provider: str = "local"
-    source_subject: str = ""
     workspace: str
+    bound_providers: list[str] = []
 
 
 class AdminUserCreate(_PasswordBase):
@@ -66,8 +66,8 @@ class AdminUserOut(BaseModel):
     status: str
     source: str
     source_provider: str = "local"
-    source_subject: str = ""
     workspace: str
+    bound_providers: list[str] = []
     created_at: datetime
 
 
@@ -159,19 +159,18 @@ class AdminResetPasswordRequest(BaseModel):
 
 
 class SsoProviderBase(BaseModel):
-    key: str = Field(min_length=2, max_length=64)
-    name: str = Field(min_length=1, max_length=255)
     protocol: str = Field(pattern="^(ldap|cas|oidc|oauth2|saml2)$")
     enabled: bool = True
     auto_create_user: bool = True
     default_role: str = "user"
     default_workspace: str = "default"
     config: dict = Field(default_factory=dict)
-    attribute_mapping: dict = Field(default_factory=dict)
+    field_mapping: dict = Field(default_factory=dict)
 
 
 class SsoProviderCreate(SsoProviderBase):
-    pass
+    key: str | None = Field(default=None, min_length=2, max_length=64)
+    name: str | None = Field(default=None, min_length=1, max_length=255)
 
 
 class SsoProviderUpdate(BaseModel):
@@ -183,11 +182,13 @@ class SsoProviderUpdate(BaseModel):
     default_role: str | None = None
     default_workspace: str | None = None
     config: dict | None = None
-    attribute_mapping: dict | None = None
+    field_mapping: dict | None = None
 
 
 class SsoProviderOut(SsoProviderBase):
     id: int
+    key: str
+    name: str
     created_at: datetime
 
 
@@ -206,12 +207,25 @@ class SsoPasswordLoginRequest(_PasswordBase):
 class SsoProviderTestRequest(BaseModel):
     protocol: str = Field(pattern="^(ldap|cas|oidc|oauth2|saml2)$")
     config: dict = Field(default_factory=dict)
-    attribute_mapping: dict = Field(default_factory=dict)
+    field_mapping: dict = Field(default_factory=dict)
 
 
 class SsoProviderTestResponse(BaseModel):
     status: str
     message: str
+
+
+class SsoBindPending(BaseModel):
+    bind_token: str
+    provider_key: str
+    provider_name: str
+    provider_protocol: str
+    username: str
+    message: str
+
+
+class SsoBindRequest(BaseModel):
+    bind_token: str = Field(min_length=16, max_length=4096)
 
 
 class AgentGroupCreate(BaseModel):

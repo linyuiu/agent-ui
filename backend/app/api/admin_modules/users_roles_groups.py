@@ -24,8 +24,8 @@ def _admin_user_out(user: models.User, roles: list[str]) -> schemas.AdminUserOut
         status=user.status,
         source=user.source,
         source_provider=user.source_provider or "local",
-        source_subject=user.source_subject or "",
         workspace=user.workspace,
+        bound_providers=[],
         created_at=user.created_at,
     )
 
@@ -131,6 +131,12 @@ async def create_user(
     if email_existing:
         raise HTTPException(status_code=409, detail="Email already registered")
 
+    username_existing = (
+        await db.execute(select(models.User).where(models.User.username == payload.username))
+    ).scalar_one_or_none()
+    if username_existing:
+        raise HTTPException(status_code=409, detail="Username already registered")
+
     user = models.User(
         account=payload.account,
         username=payload.username,
@@ -172,6 +178,11 @@ async def update_user(
         user.account = payload.account
 
     if payload.username and payload.username != user.username:
+        existing = (
+            await db.execute(select(models.User).where(models.User.username == payload.username))
+        ).scalar_one_or_none()
+        if existing and existing.id != user.id:
+            raise HTTPException(status_code=409, detail="Username already registered")
         user.username = payload.username
 
     if payload.email and payload.email != user.email:
@@ -229,6 +240,7 @@ async def delete_user(
         )
     )
     await db.execute(delete(models.UserRole).where(models.UserRole.user_id == user_id))
+    await db.execute(delete(models.UserSsoBinding).where(models.UserSsoBinding.user_id == user_id))
     await db.delete(user)
     await db.commit()
     return {"status": "deleted"}
