@@ -19,8 +19,8 @@ dependencies = [
   "celery[redis]>=5.4",
 ]
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
   "ruff>=0.5",
   "pytest>=8.0",
 ]

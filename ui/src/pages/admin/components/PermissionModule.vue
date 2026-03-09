@@ -39,48 +39,49 @@
       <p v-if="permissionSuccess" class="state success">{{ permissionSuccess }}</p>
 
       <div class="permission-body">
-        <aside class="permission-column subject-column">
-          <div class="column-title">{{ subjectTab === 'user' ? '用户' : '角色' }}</div>
-          <div class="search-box compact">
-            <input v-model="subjectSearch" type="text" placeholder="搜索" />
-          </div>
-          <p v-if="subjectTab === 'user' && usersLoading" class="state">加载用户中...</p>
-          <p v-if="subjectTab === 'user' && usersError" class="state error">{{ usersError }}</p>
-          <p v-if="subjectTab === 'role' && rolesLoading" class="state">加载角色中...</p>
-          <p v-if="subjectTab === 'role' && rolesError" class="state error">{{ rolesError }}</p>
-          <div v-if="subjectTab === 'user'" class="list">
-            <button
-              v-for="user in filteredUserSubjects"
-              :key="user.id"
-              class="list-item subject-item"
-              :class="{ active: selectedSubjectId === String(user.id) }"
-              type="button"
-              @click="selectedSubjectId = String(user.id)"
-            >
-              <div class="subject-line">
-                <strong>{{ user.username }}</strong>
-                <span class="subject-account">{{ user.account }}</span>
-              </div>
-            </button>
-          </div>
-          <div v-else class="list">
-            <button
-              v-for="role in filteredRoleSubjects"
-              :key="role.id"
-              class="list-item role-item"
-              :class="{ active: selectedSubjectId === role.name }"
-              type="button"
-              @click="selectedSubjectId = role.name"
-            >
-              <strong>{{ role.name }}</strong>
-              <small>{{ role.description || '暂无描述' }}</small>
-            </button>
-          </div>
-        </aside>
+        <div class="permission-side-columns">
+          <aside class="permission-column subject-column">
+            <div class="column-title">{{ subjectTab === 'user' ? '用户' : '角色' }}</div>
+            <div class="search-box compact">
+              <input v-model="subjectSearch" type="text" placeholder="搜索" />
+            </div>
+            <p v-if="subjectTab === 'user' && usersLoading" class="state">加载用户中...</p>
+            <p v-if="subjectTab === 'user' && usersError" class="state error">{{ usersError }}</p>
+            <p v-if="subjectTab === 'role' && rolesLoading" class="state">加载角色中...</p>
+            <p v-if="subjectTab === 'role' && rolesError" class="state error">{{ rolesError }}</p>
+            <div v-if="subjectTab === 'user'" class="list">
+              <button
+                v-for="user in filteredUserSubjects"
+                :key="user.id"
+                class="list-item subject-item"
+                :class="{ active: selectedSubjectId === String(user.id) }"
+                type="button"
+                @click="selectedSubjectId = String(user.id)"
+              >
+                <div class="subject-line">
+                  <strong>{{ user.username }}</strong>
+                  <span class="subject-account">{{ user.account }}</span>
+                </div>
+              </button>
+            </div>
+            <div v-else class="list">
+              <button
+                v-for="role in filteredRoleSubjects"
+                :key="role.id"
+                class="list-item role-item"
+                :class="{ active: selectedSubjectId === role.name }"
+                type="button"
+                @click="selectedSubjectId = role.name"
+              >
+                <strong>{{ role.name }}</strong>
+                <small>{{ role.description || '暂无描述' }}</small>
+              </button>
+            </div>
+          </aside>
 
-        <aside class="permission-column scope-column">
-          <div class="column-title">{{ scopeTab === 'menu' ? '菜单权限' : '资源分类' }}</div>
-          <div class="list">
+          <aside class="permission-column scope-column">
+            <div class="column-title">{{ scopeTab === 'menu' ? '菜单权限' : '资源分类' }}</div>
+            <div class="list">
               <button
                 v-for="item in scopeItems"
                 :key="item.id"
@@ -92,8 +93,9 @@
                 <strong>{{ item.label }}</strong>
                 <small v-if="item.subLabel">{{ item.subLabel }}</small>
               </button>
-          </div>
-        </aside>
+            </div>
+          </aside>
+        </div>
 
         <section class="permission-column table-column">
           <div class="table-toolbar">
