@@ -19,12 +19,19 @@ export type SsoBindPending = {
 export type SsoLoginResponse = {
   access_token: string
   token_type: string
+  permissions?: unknown
   user?: {
     email?: string
     username?: string
     account?: string
     role?: string
   }
+}
+
+export type SsoLoginOptions = {
+  enabled_methods: Array<'local' | 'ldap' | 'cas' | 'oidc' | 'oauth2' | 'saml2'>
+  default_login_method: 'local' | 'ldap' | 'cas' | 'oidc' | 'oauth2' | 'saml2'
+  providers: SsoProviderPublic[]
 }
 
 export type SsoPasswordLoginResult =
@@ -42,10 +49,22 @@ export const fetchEnabledSsoProviders = async (): Promise<SsoProviderPublic[]> =
   return (await response.json()) as SsoProviderPublic[]
 }
 
+export const fetchSsoLoginOptions = async (): Promise<SsoLoginOptions> => {
+  const response = await fetch(`${API_BASE}/auth/sso/options`)
+  if (!response.ok) {
+    return {
+      enabled_methods: ['local'],
+      default_login_method: 'local',
+      providers: [],
+    }
+  }
+  return (await response.json()) as SsoLoginOptions
+}
+
 export const ssoPasswordLogin = async (payload: {
   provider_key: string
-  account: string
-  password: string
+  encrypted_payload: string
+  key_id: string
 }): Promise<SsoPasswordLoginResult> => {
   const response = await fetch(`${API_BASE}/auth/sso/password-login`, {
     method: 'POST',

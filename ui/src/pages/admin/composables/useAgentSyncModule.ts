@@ -640,10 +640,9 @@ export const useAgentSyncModule = () => {
         workspaces: workspacePayloads,
         sync_chat_users: syncChatUsers,
       })
-      apiSyncSuccess.value = `同步完成：新增 ${result.imported}，更新 ${result.updated}。`
-      if (result.tasks?.length) {
-        apiSyncSuccess.value += ` 已创建 ${result.tasks.length} 个对话用户同步任务。`
-      }
+      apiSyncSuccess.value = result.tasks?.length
+        ? `已创建 ${result.tasks.length} 个智能体同步任务。`
+        : `同步完成：新增 ${result.imported}，更新 ${result.updated}。`
       if (result.errors?.length) {
         apiSyncError.value = result.errors.slice(0, 3).join('；')
       }

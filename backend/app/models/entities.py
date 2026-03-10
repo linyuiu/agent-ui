@@ -1,6 +1,6 @@
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, Boolean, Column, DateTime, Index, Integer, String, Text, UniqueConstraint, func
 
 from ..db import Base
 
@@ -20,6 +20,10 @@ class User(Base):
     source_subject = Column(String(255), nullable=False, default="")
     workspace = Column(String(100), nullable=False, default="default")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_users_username_source", "username", "source"),
+    )
 
 
 class UserSsoBinding(Base):
@@ -44,6 +48,27 @@ class UserSsoBinding(Base):
     __table_args__ = (
         UniqueConstraint("provider_key", "external_subject", name="uq_user_sso_binding_subject"),
         UniqueConstraint("user_id", "provider_key", name="uq_user_sso_binding_provider"),
+    )
+
+
+class UserChatBinding(Base):
+    __tablename__ = "user_chat_bindings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    chat_user_id = Column(String(255), nullable=False, index=True)
+    binding_source = Column(String(32), nullable=False, default="matched")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("chat_user_id", name="uq_user_chat_binding_chat_user"),
+        UniqueConstraint("user_id", "chat_user_id", name="uq_user_chat_binding_pair"),
     )
 
 
@@ -178,6 +203,10 @@ class ChatUser(Base):
         onupdate=func.now(),
     )
 
+    __table_args__ = (
+        Index("ix_chat_users_username_source", "username", "source"),
+    )
+
 
 class ChatUserGroup(Base):
     __tablename__ = "chat_user_groups"
@@ -237,6 +266,7 @@ class AgentChatUserAccess(Base):
 
     __table_args__ = (
         UniqueConstraint("agent_id", "group_id", "chat_user_id", name="uq_agent_chat_user_access"),
+        Index("ix_agent_chat_user_access_agent_auth", "agent_id", "is_auth"),
     )
 
 
@@ -258,6 +288,7 @@ class SyncTask(Base):
     processed_records = Column(Integer, nullable=False, default=0)
     message = Column(Text, nullable=False, default="")
     error = Column(Text, nullable=False, default="")
+    payload = Column(JSON, nullable=False, default=dict)
     celery_task_id = Column(String(255), nullable=False, default="")
     created_by = Column(Integer, nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -278,10 +309,6 @@ class AuthProviderConfig(Base):
     key = Column(String(64), unique=True, nullable=False, index=True)
     name = Column(String(255), nullable=False)
     protocol = Column(String(20), nullable=False)
-    enabled = Column(Boolean, nullable=False, default=True)
-    auto_create_user = Column(Boolean, nullable=False, default=True)
-    default_role = Column(String(50), nullable=False, default="user")
-    default_workspace = Column(String(100), nullable=False, default="default")
     config = Column(JSON, nullable=False, default=dict)
     field_mapping = Column("attribute_mapping", JSON, nullable=False, default=dict)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -293,6 +320,23 @@ class AuthProviderConfig(Base):
     @attribute_mapping.setter
     def attribute_mapping(self, value: dict | None) -> None:
         self.field_mapping = value or {}
+
+
+class SystemAuthSetting(Base):
+    __tablename__ = "system_auth_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    enabled_methods = Column(JSON, nullable=False, default=list)
+    default_login_method = Column(String(32), nullable=False, default="local")
+    auto_create_user = Column(Boolean, nullable=False, default=True)
+    default_role = Column(String(50), nullable=False, default="user")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
 
 
 class Model(Base):

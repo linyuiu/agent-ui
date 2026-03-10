@@ -199,25 +199,17 @@ async def create_sso_provider(
     if existing_protocol is not None:
         raise HTTPException(status_code=409, detail="该协议已存在配置，请直接更新")
 
-    role_name = (payload.default_role or "user").strip() or "user"
-    role = (await db.execute(select(models.Role.id).where(models.Role.name == role_name))).scalar_one_or_none()
-    if role is None:
-        raise HTTPException(status_code=400, detail="Role not found")
-
     config = normalize_config(payload.config)
     _validate_protocol_config(protocol, config)
     provider = models.AuthProviderConfig(
         key=_provider_key(protocol, payload.key),
         name=(payload.name or _PROTOCOL_LABELS.get(protocol, protocol.upper())).strip(),
         protocol=protocol,
-        enabled=bool(payload.enabled),
-        auto_create_user=bool(payload.auto_create_user),
-        default_role=role_name,
-        default_workspace=(payload.default_workspace or "default").strip() or "default",
         config=config,
         field_mapping={} if protocol == "cas" else normalize_mapping(payload.field_mapping),
     )
     db.add(provider)
+    await db.flush()
     await db.commit()
     await db.refresh(provider)
     return build_provider_out(provider)
@@ -257,18 +249,6 @@ async def update_sso_provider(
     elif not provider.name:
         provider.name = _PROTOCOL_LABELS.get(next_protocol, next_protocol.upper())
 
-    if payload.enabled is not None:
-        provider.enabled = bool(payload.enabled)
-    if payload.auto_create_user is not None:
-        provider.auto_create_user = bool(payload.auto_create_user)
-    if payload.default_role is not None:
-        role_name = (payload.default_role or "user").strip() or "user"
-        role = (await db.execute(select(models.Role.id).where(models.Role.name == role_name))).scalar_one_or_none()
-        if role is None:
-            raise HTTPException(status_code=400, detail="Role not found")
-        provider.default_role = role_name
-    if payload.default_workspace is not None:
-        provider.default_workspace = (payload.default_workspace or "default").strip() or "default"
     if payload.config is not None:
         provider.config = _merge_sensitive_config(dict(provider.config or {}), normalize_config(payload.config))
     if payload.field_mapping is not None:

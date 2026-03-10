@@ -6,7 +6,8 @@ from .. import models, schemas, security
 from ..auth import get_current_user
 from ..permissions import get_user_role_names_async, summarize_permissions_async
 from ..db import get_db
-from ..services.sso import build_user_public_async
+from ..services.sso import build_user_public_async, get_system_auth_setting_async, normalize_enabled_methods
+from ..security import decrypt_login_payload, get_login_public_key
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -16,6 +17,40 @@ async def _verify_password_safe(plain: str, hashed: str) -> bool:
         return await security.verify_password_async(plain, hashed)
     except Exception:
         return False
+
+
+def _resolve_login_credentials(
+    *,
+    account: str | None,
+    password: str | None,
+    encrypted_payload: str | None,
+    key_id: str | None,
+) -> tuple[str, str]:
+    resolved_account = str(account or "").strip()
+    resolved_password = str(password or "")
+    if encrypted_payload:
+        try:
+            decrypted = decrypt_login_payload(encrypted_payload, key_id=key_id)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="登录凭据解密失败",
+            ) from exc
+        resolved_account = str(decrypted.get("account") or decrypted.get("username") or resolved_account).strip()
+        resolved_password = str(decrypted.get("password") or resolved_password)
+
+    if not resolved_account or not resolved_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="账号和密码不能为空",
+        )
+    return resolved_account, resolved_password
+
+
+@router.get("/login-key", response_model=schemas.LoginKeyResponse)
+async def get_login_key() -> schemas.LoginKeyResponse:
+    key = get_login_public_key()
+    return schemas.LoginKeyResponse(**key)
 
 
 @router.post("/register", response_model=schemas.UserPublic, status_code=201)
@@ -58,11 +93,25 @@ async def register(payload: schemas.RegisterRequest, db: AsyncSession = Depends(
 
 @router.post("/login", response_model=schemas.LoginResponse)
 async def login(payload: schemas.LoginRequest, db: AsyncSession = Depends(get_db)) -> schemas.LoginResponse:
+    auth_settings = await get_system_auth_setting_async(db)
+    if "local" not in normalize_enabled_methods(list(auth_settings.enabled_methods or [])):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="账号登录未启用",
+        )
+
+    account, password = _resolve_login_credentials(
+        account=payload.account,
+        password=payload.password,
+        encrypted_payload=payload.encrypted_payload,
+        key_id=payload.key_id,
+    )
+
     user = (
-        await db.execute(select(models.User).where(models.User.account == payload.account))
+        await db.execute(select(models.User).where(models.User.account == account))
     ).scalar_one_or_none()
 
-    if not user or not await _verify_password_safe(payload.password, user.password_hash):
+    if not user or not await _verify_password_safe(password, user.password_hash):
         if user and user.source != "local":
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -81,10 +130,12 @@ async def login(payload: schemas.LoginRequest, db: AsyncSession = Depends(get_db
     token = security.create_access_token(
         {"sub": str(user.id), "email": user.email, "username": user.username, "account": user.account}
     )
+    permissions = schemas.PermissionSummary(**(await summarize_permissions_async(db, user)))
     return schemas.LoginResponse(
         access_token=token,
         token_type="bearer",
         user=await build_user_public_async(db, user),
+        permissions=permissions,
     )
 
 

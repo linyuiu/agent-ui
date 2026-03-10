@@ -238,6 +238,13 @@
   color: #8d5a10;
 }
 
+.notice--success {
+  display: grid;
+  gap: 4px;
+  background: rgba(15, 107, 79, 0.12);
+  color: #0f6b4f;
+}
+
 .hint {
   margin-top: 18px;
   font-size: 12px;

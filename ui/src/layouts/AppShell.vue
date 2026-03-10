@@ -52,6 +52,14 @@
                     </button>
                     <button
                       class="nav-sub-item"
+                      :class="{ active: activeSystemSubmodule === 'system-settings' }"
+                      type="button"
+                      @click="goToAdminSubmodule('system-settings')"
+                    >
+                      系统设置
+                    </button>
+                    <button
+                      class="nav-sub-item"
                       :class="{ active: activeSystemSubmodule === 'auth-settings' }"
                       type="button"
                       @click="goToAdminSubmodule('auth-settings')"
@@ -196,6 +204,7 @@ const sidebarModules = computed(() => modules.value.filter((item) => item.id !==
 const adminSubmoduleList = [
   'user-role',
   'permissions',
+  'system-settings',
   'auth-settings',
   'agent-sync',
   'sync-progress',

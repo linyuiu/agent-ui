@@ -11,11 +11,11 @@
         <p class="subtitle">使用账号和密码登录，继续你的工作流。</p>
       </header>
 
-      <form class="form" @submit.prevent="handleSubmit">
+      <form v-if="showPasswordForm" class="form" @submit.prevent="handleSubmit">
         <div class="form-title-row">
           <h2 class="form-title">账号登录</h2>
           <button
-            v-if="selectedPasswordProvider"
+            v-if="selectedPasswordProvider && localLoginEnabled"
             class="ghost switch-btn"
             type="button"
             @click="resetToLocalLogin"
@@ -31,6 +31,11 @@
         <div v-if="bindMessage" class="notice notice--warning">
           <strong>{{ bindProviderName || '单点登录' }}</strong>
           <span>{{ bindMessage }}</span>
+        </div>
+
+        <div v-if="bindSuccessMessage" class="notice notice--success">
+          <strong>绑定成功</strong>
+          <span>{{ bindSuccessMessage }}</span>
         </div>
 
         <label class="field">
@@ -127,12 +132,13 @@ import { createChatSession } from '../../services/chat-session'
 import {
   bindSsoIdentity,
   buildSsoStartUrl,
-  fetchEnabledSsoProviders,
+  fetchSsoLoginOptions,
   ssoPasswordLogin,
   type SsoBindPending,
   type SsoProviderPublic,
 } from '../../services/sso'
 import { clearAuthSession, persistAuthSession } from '../../utils/auth-storage'
+import { encryptLoginCredentials } from '../../utils/login-crypto'
 
 const route = useRoute()
 const router = useRouter()
@@ -141,19 +147,26 @@ const account = ref('')
 const password = ref('')
 const passwordProviderKey = ref('')
 const ssoProviders = ref<SsoProviderPublic[]>([])
+const localLoginEnabled = ref(true)
 const showPassword = ref(false)
 const loading = ref(false)
 const error = ref('')
 const bindMessage = ref('')
 const bindProviderName = ref('')
 const pendingBindToken = ref('')
+const bindSuccessMessage = ref('')
 
 const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
 const passwordProviders = computed(() => ssoProviders.value.filter((item) => item.login_mode === 'password'))
-const otherProviders = computed(() => ssoProviders.value)
+const otherProviders = computed(() =>
+  ssoProviders.value.filter((item) => item.key !== selectedPasswordProvider.value?.key)
+)
 const selectedPasswordProvider = computed(() =>
   passwordProviders.value.find((item) => item.key === passwordProviderKey.value) || null
+)
+const showPasswordForm = computed(
+  () => localLoginEnabled.value || passwordProviders.value.length > 0 || !!pendingBindToken.value
 )
 
 const getRedirectTarget = () =>
@@ -176,10 +189,31 @@ const resetToLocalLogin = () => {
   passwordProviderKey.value = ''
 }
 
+const applyLoginOptions = (payload: {
+  enabled_methods: Array<'local' | 'ldap' | 'cas' | 'oidc' | 'oauth2' | 'saml2'>
+  default_login_method: 'local' | 'ldap' | 'cas' | 'oidc' | 'oauth2' | 'saml2'
+  providers: SsoProviderPublic[]
+}) => {
+  ssoProviders.value = payload.providers
+  localLoginEnabled.value = payload.enabled_methods.includes('local')
+  passwordProviderKey.value = ''
+
+  if (payload.default_login_method === 'local') return
+  const defaultPasswordProvider = payload.providers.find(
+    (item) => item.protocol === payload.default_login_method && item.login_mode === 'password'
+  )
+  if (defaultPasswordProvider) {
+    passwordProviderKey.value = defaultPasswordProvider.key
+  }
+}
+
+const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
+
 const setBindPending = (payload: SsoBindPending) => {
   pendingBindToken.value = payload.bind_token
   bindMessage.value = payload.message
   bindProviderName.value = payload.provider_name
+  bindSuccessMessage.value = ''
   resetToLocalLogin()
 }
 
@@ -199,11 +233,17 @@ const persistPermissions = async (token: string) => {
   }
 }
 
-const finalizeLogin = async (payload: { access_token?: string; user?: unknown }) => {
+const finalizeLogin = async (payload: { access_token?: string; user?: unknown; permissions?: unknown }) => {
   const token = payload?.access_token || ''
   if (!token) throw new Error('登录响应缺少 token')
-  persistAuthSession({ token, user: payload?.user as Record<string, unknown> })
-  await persistPermissions(token)
+  persistAuthSession({
+    token,
+    user: payload?.user as Record<string, unknown>,
+    permissions: payload?.permissions,
+  })
+  if (typeof payload?.permissions === 'undefined') {
+    await persistPermissions(token)
+  }
 
   const redirectTarget = getRedirectTarget()
   const isChatRedirect = redirectTarget.startsWith('/chat/')
@@ -222,14 +262,16 @@ const finalizeLogin = async (payload: { access_token?: string; user?: unknown })
 
 const handleSubmit = async () => {
   error.value = ''
+  bindSuccessMessage.value = ''
   loading.value = true
 
   try {
+    const encrypted = await encryptLoginCredentials(account.value, password.value)
     if (passwordProviderKey.value) {
       const result = await ssoPasswordLogin({
         provider_key: passwordProviderKey.value,
-        account: account.value,
-        password: password.value,
+        encrypted_payload: encrypted.encrypted_payload,
+        key_id: encrypted.key_id,
       })
       if (result.type === 'bind_required') {
         setBindPending(result.payload)
@@ -245,8 +287,8 @@ const handleSubmit = async () => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        account: account.value,
-        password: password.value,
+        encrypted_payload: encrypted.encrypted_payload,
+        key_id: encrypted.key_id,
       }),
     })
     const payload = await response.json().catch(() => ({}))
@@ -259,8 +301,10 @@ const handleSubmit = async () => {
     if (pendingBindToken.value) {
       try {
         await bindSsoIdentity(token, pendingBindToken.value)
+        bindSuccessMessage.value = `${bindProviderName.value || '单点账号'} 已绑定到当前本地账号，正在进入系统。`
         pendingBindToken.value = ''
         bindMessage.value = ''
+        await wait(1000)
         bindProviderName.value = ''
       } catch (err) {
         clearAuthSession()
@@ -328,7 +372,7 @@ const consumeBindQuery = () => {
 }
 
 onMounted(async () => {
-  ssoProviders.value = await fetchEnabledSsoProviders()
+  applyLoginOptions(await fetchSsoLoginOptions())
   consumeBindQuery()
   await consumeSsoHashToken()
 })

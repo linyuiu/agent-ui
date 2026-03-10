@@ -19,6 +19,7 @@ from ...permissions import (
     require_menu_action,
 )
 from ...services.chat_links import build_proxy_chat_url, parse_upstream_chat_url
+from ...services.http_client import get_shared_async_client
 
 
 def require_menu_view(user: models.User, db: Session, menu_id: str) -> None:
@@ -318,8 +319,8 @@ def fit2cloud_fetch(base_url: str, token: str, path: str) -> dict:
 
 async def fit2cloud_fetch_async(base_url: str, token: str, path: str) -> dict:
     headers = {"accept": "application/json", "Authorization": fit2cloud_auth_header(token)}
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        resp = await client.get(f"{base_url}{path}", headers=headers)
+    client = get_shared_async_client()
+    resp = await client.get(f"{base_url}{path}", headers=headers)
     resp.raise_for_status()
     data = resp.json()
     if isinstance(data, dict) and data.get("code") == 200:

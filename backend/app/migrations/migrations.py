@@ -314,6 +314,7 @@ def ensure_schema() -> None:
                 ("processed_records", "INTEGER"),
                 ("message", "TEXT"),
                 ("error", "TEXT"),
+                ("payload", "JSON"),
                 ("celery_task_id", "VARCHAR(255)"),
                 ("created_by", "INTEGER"),
                 ("started_at", "TIMESTAMP WITH TIME ZONE"),
@@ -334,7 +335,22 @@ def ensure_schema() -> None:
             conn.execute(text("UPDATE sync_tasks SET processed_records = COALESCE(processed_records, 0) WHERE processed_records IS NULL"))
             conn.execute(text("UPDATE sync_tasks SET message = COALESCE(message, '') WHERE message IS NULL"))
             conn.execute(text("UPDATE sync_tasks SET error = COALESCE(error, '') WHERE error IS NULL"))
+            conn.execute(text("UPDATE sync_tasks SET payload = '{}'::json WHERE payload IS NULL"))
             conn.execute(text("UPDATE sync_tasks SET celery_task_id = COALESCE(celery_task_id, '') WHERE celery_task_id IS NULL"))
+
+        if "users" in tables:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_username_source ON users (username, source)"))
+
+        if "chat_users" in tables:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_chat_users_username_source ON chat_users (username, source)"))
+
+        if "agent_chat_user_accesses" in tables:
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_agent_chat_user_access_agent_auth "
+                    "ON agent_chat_user_accesses (agent_id, is_auth)"
+                )
+            )
 
         if "models" in tables:
             columns = _column_names(inspector, "models")
@@ -389,6 +405,7 @@ def ensure_schema() -> None:
 
     _backfill_agent_chat_links()
     _seed_roles()
+    _seed_system_auth_settings()
     _seed_admin_user()
     _seed_admin_permissions()
     _seed_user_permissions()
@@ -441,6 +458,36 @@ def _seed_roles() -> None:
             session.add(models.Role(name=name, description=desc))
             created = True
         if created:
+            session.commit()
+
+
+def _seed_system_auth_settings() -> None:
+    with Session(engine) as session:
+        setting = session.query(models.SystemAuthSetting).order_by(models.SystemAuthSetting.id.asc()).first()
+        if not setting:
+            session.add(
+                models.SystemAuthSetting(
+                    enabled_methods=["local"],
+                    default_login_method="local",
+                    auto_create_user=True,
+                    default_role="user",
+                )
+            )
+            session.commit()
+            return
+
+        changed = False
+        enabled_methods = list(setting.enabled_methods or []) or ["local"]
+        if setting.enabled_methods != enabled_methods:
+            setting.enabled_methods = enabled_methods
+            changed = True
+        if not str(setting.default_login_method or "").strip():
+            setting.default_login_method = "local"
+            changed = True
+        if not str(setting.default_role or "").strip():
+            setting.default_role = "user"
+            changed = True
+        if changed:
             session.commit()
 
 

@@ -116,10 +116,14 @@
 }
 
 .sso-form-grid .field textarea {
-  min-height: 110px;
-  resize: vertical;
-  line-height: 1.55;
+  height: 42px;
+  min-height: 42px;
+  resize: none;
+  line-height: 20px;
   font-family: 'IBM Plex Sans', sans-serif;
+  white-space: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .required {
@@ -138,27 +142,62 @@
 }
 
 .password-field {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 42px;
+  border: 1px solid #d6e0e2;
+  border-radius: 12px;
+  background: #fff;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.password-field:focus-within {
+  border-color: #0fb3b9;
+  box-shadow: 0 0 0 3px rgba(15, 179, 185, 0.15);
+}
+
+.password-field input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: none !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 12px !important;
+}
+
+.password-field input:focus {
+  outline: none;
+  box-shadow: none !important;
 }
 
 .password-toggle {
-  border: 1px solid rgba(15, 40, 55, 0.16);
-  border-radius: 12px;
-  background: #fff;
+  border: none;
+  border-left: 1px solid rgba(15, 40, 55, 0.12);
+  border-radius: 0;
+  background: rgba(15, 179, 185, 0.04);
   color: #4f5f66;
-  min-width: 68px;
-  height: 42px;
-  padding: 0 12px;
+  width: 42px;
+  min-width: 42px;
+  height: 100%;
+  padding: 0;
   cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .password-toggle:hover {
   background: rgba(15, 179, 185, 0.08);
   color: #0c7e85;
+}
+
+.eye-icon {
+  width: 18px;
+  height: 18px;
 }
 
 .common-settings {
@@ -211,6 +250,6 @@
   }
 
   .password-field {
-    grid-template-columns: 1fr;
+    height: 42px;
   }
 }

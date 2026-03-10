@@ -7,8 +7,11 @@ class _PasswordBase(BaseModel):
     password: str = Field(min_length=6, max_length=128)
 
 
-class LoginRequest(_PasswordBase):
-    account: str = Field(min_length=2, max_length=64)
+class LoginRequest(BaseModel):
+    account: str | None = Field(default=None, min_length=2, max_length=64)
+    password: str | None = Field(default=None, min_length=6, max_length=128)
+    encrypted_payload: str | None = Field(default=None, min_length=32, max_length=8192)
+    key_id: str | None = Field(default=None, min_length=8, max_length=64)
 
 
 class RegisterRequest(_PasswordBase):
@@ -112,6 +115,9 @@ class ResourcePermission(BaseModel):
 
 
 class PermissionSummary(BaseModel):
+    roles: list[str] = []
+    is_super_admin: bool = False
+    synced_agent_ids: list[str] = []
     menus: list[MenuPermission]
     resources: list[ResourcePermission]
 
@@ -147,6 +153,7 @@ class LoginResponse(BaseModel):
     access_token: str
     token_type: str
     user: UserPublic
+    permissions: PermissionSummary | None = None
 
 
 class PasswordChangeRequest(BaseModel):
@@ -160,10 +167,6 @@ class AdminResetPasswordRequest(BaseModel):
 
 class SsoProviderBase(BaseModel):
     protocol: str = Field(pattern="^(ldap|cas|oidc|oauth2|saml2)$")
-    enabled: bool = True
-    auto_create_user: bool = True
-    default_role: str = "user"
-    default_workspace: str = "default"
     config: dict = Field(default_factory=dict)
     field_mapping: dict = Field(default_factory=dict)
 
@@ -177,10 +180,6 @@ class SsoProviderUpdate(BaseModel):
     key: str | None = Field(default=None, min_length=2, max_length=64)
     name: str | None = Field(default=None, min_length=1, max_length=255)
     protocol: str | None = Field(default=None, pattern="^(ldap|cas|oidc|oauth2|saml2)$")
-    enabled: bool | None = None
-    auto_create_user: bool | None = None
-    default_role: str | None = None
-    default_workspace: str | None = None
     config: dict | None = None
     field_mapping: dict | None = None
 
@@ -199,9 +198,41 @@ class SsoProviderPublic(BaseModel):
     login_mode: str = Field(pattern="^(redirect|password)$")
 
 
-class SsoPasswordLoginRequest(_PasswordBase):
-    provider_key: str = Field(min_length=2, max_length=64)
-    account: str = Field(min_length=1, max_length=255)
+class SystemAuthSettingBase(BaseModel):
+    enabled_methods: list[str] = Field(default_factory=list)
+    default_login_method: str = Field(pattern="^(local|ldap|cas|oidc|oauth2|saml2)$")
+    auto_create_user: bool = True
+    default_role: str = "user"
+
+
+class SystemAuthSettingUpdate(SystemAuthSettingBase):
+    pass
+
+
+class SystemAuthSettingOut(SystemAuthSettingBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class SsoLoginOptions(BaseModel):
+    enabled_methods: list[str] = Field(default_factory=list)
+    default_login_method: str = Field(pattern="^(local|ldap|cas|oidc|oauth2|saml2)$")
+    providers: list[SsoProviderPublic] = []
+
+
+class SsoPasswordLoginRequest(BaseModel):
+    provider_key: str | None = Field(default=None, min_length=2, max_length=64)
+    account: str | None = Field(default=None, min_length=1, max_length=255)
+    password: str | None = Field(default=None, min_length=6, max_length=128)
+    encrypted_payload: str | None = Field(default=None, min_length=32, max_length=8192)
+    key_id: str | None = Field(default=None, min_length=8, max_length=64)
+
+
+class LoginKeyResponse(BaseModel):
+    key_id: str
+    algorithm: str = "RSA-OAEP-256"
+    public_key_pem: str
 
 
 class SsoProviderTestRequest(BaseModel):
@@ -325,6 +356,7 @@ class SyncTaskOut(BaseModel):
     processed_records: int = 0
     message: str = ""
     error: str = ""
+    payload: dict = Field(default_factory=dict)
     created_by: int | None = None
     celery_task_id: str = ""
     created_at: datetime

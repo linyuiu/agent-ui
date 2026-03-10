@@ -10,20 +10,22 @@
     <div class="panel user-panel">
       <div class="user-toolbar">
         <div ref="filterRef" class="search-box filter-box">
-          <button class="filter-trigger" type="button" @click="toggleFilter">
-            {{ userFilterField === 'username' ? '用户名' : '账号' }}
-            <span class="caret" :class="{ open: filterOpen }"></span>
-          </button>
-          <transition name="slide-fade">
-            <div v-if="filterOpen" class="filter-dropdown">
-              <button class="filter-option" type="button" @click="selectFilter('username')">
-                用户名
-              </button>
-              <button class="filter-option" type="button" @click="selectFilter('account')">
-                账号
-              </button>
-            </div>
-          </transition>
+          <div class="inline-dropdown filter-selector" @click.stop>
+            <button class="filter-trigger" type="button" @click="toggleFilter">
+              {{ userFilterField === 'username' ? '用户名' : '账号' }}
+              <span class="caret" :class="{ open: filterOpen }"></span>
+            </button>
+            <transition name="slide-fade">
+              <div v-if="filterOpen" class="filter-dropdown">
+                <button class="filter-option" type="button" @click="selectFilter('username')">
+                  用户名
+                </button>
+                <button class="filter-option" type="button" @click="selectFilter('account')">
+                  账号
+                </button>
+              </div>
+            </transition>
+          </div>
           <input
             v-model="userSearch"
             type="text"
@@ -136,6 +138,7 @@
           <div class="col col-status">用户状态</div>
           <div class="col col-email">邮箱</div>
           <div class="col col-source">用户来源</div>
+          <div class="col col-bindings">绑定登录</div>
           <div class="col col-workspace">工作空间</div>
           <div class="col col-created">创建时间</div>
           <div class="col col-role">角色</div>
@@ -173,6 +176,18 @@
             </div>
             <div class="col col-email">{{ user.email }}</div>
             <div class="col col-source">{{ user.source || 'local' }}</div>
+            <div class="col col-bindings">
+              <div v-if="user.bound_providers?.length" class="binding-chip-row">
+                <span
+                  v-for="provider in user.bound_providers"
+                  :key="provider"
+                  class="binding-chip"
+                >
+                  {{ formatBoundProvider(provider) }}
+                </span>
+              </div>
+              <span v-else class="binding-empty">未绑定</span>
+            </div>
             <div class="col col-workspace">{{ user.workspace || 'default' }}</div>
             <div class="col col-created">{{ new Date(user.created_at).toLocaleString() }}</div>
             <div class="col col-role">
@@ -492,6 +507,12 @@ const { filtered: filteredRoleList } = useSearchableList(roles, roleSearch, (rol
 const protectedRoles = new Set(['admin', 'user'])
 const isProtectedRole = (name: string) => protectedRoles.has(name)
 const isAdminAccount = (account?: string) => String(account || '').trim().toLowerCase() === 'admin'
+const formatBoundProvider = (provider: string) => {
+  const normalized = String(provider || '').trim()
+  if (!normalized) return ''
+  if (normalized.toLowerCase() === 'oauth2') return 'OAuth2'
+  return normalized.toUpperCase()
+}
 
 const handleCreateRole = async () => {
   roleLoading.value = true

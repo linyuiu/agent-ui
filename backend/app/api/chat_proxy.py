@@ -17,6 +17,7 @@ from ..config import settings
 from ..db import get_db
 from ..permissions import evaluate_permission_async, require_menu_action_async
 from ..services.chat_links import build_proxy_chat_url, build_upstream_chat_url
+from ..services.chat_user_sync import user_can_view_synced_agent_async
 
 router = APIRouter(tags=["chat_proxy"])
 logger = logging.getLogger(__name__)
@@ -328,8 +329,11 @@ async def _require_agent_chat_access(db: AsyncSession, user: models.User, agent:
         resource_id=str(agent.id),
         resource_attrs={"groups": groups},
     )
-    if not decision.allowed:
-        raise HTTPException(status_code=403, detail=_PERMISSION_REQUIRED_DETAIL)
+    if decision.allowed:
+        return
+    if agent.is_synced and await user_can_view_synced_agent_async(db, user=user, agent_id=str(agent.id)):
+        return
+    raise HTTPException(status_code=403, detail=_PERMISSION_REQUIRED_DETAIL)
 
 
 @router.post("/chat/session")

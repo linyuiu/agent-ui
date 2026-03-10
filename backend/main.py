@@ -7,6 +7,7 @@ from starlette.concurrency import run_in_threadpool
 from app.api import register_routes
 from app.config import settings
 from app.migrations import ensure_schema
+from app.services.http_client import close_shared_async_client
 
 
 def create_app() -> FastAPI:
@@ -14,6 +15,7 @@ def create_app() -> FastAPI:
     async def lifespan(_app: FastAPI):
         await run_in_threadpool(ensure_schema)
         yield
+        await close_shared_async_client()
 
     app = FastAPI(title="Agent-UI", lifespan=lifespan)
 

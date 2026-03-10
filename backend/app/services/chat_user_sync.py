@@ -5,12 +5,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import models, schemas
 from ..db import AsyncSessionLocal
-from ..security import hash_password_async
 from ..services.serializers import agent_detail
 from ..api.admin_modules.common import fit2cloud_fetch_async
 
@@ -34,6 +33,7 @@ def sync_task_out(task: models.SyncTask) -> schemas.SyncTaskOut:
         processed_records=task.processed_records,
         message=task.message,
         error=task.error,
+        payload=dict(task.payload or {}),
         created_by=task.created_by,
         celery_task_id=task.celery_task_id,
         created_at=task.created_at,
@@ -48,6 +48,10 @@ def _now() -> datetime:
 
 
 def _normalize_source(value: str) -> str:
+    return str(value or "").strip().lower()
+
+
+def _normalize_identity(value: str) -> str:
     return str(value or "").strip().lower()
 
 
@@ -204,8 +208,10 @@ async def sync_chat_user_catalog(
         await db.execute(delete(models.ChatUserGroup))
     if user_ids:
         await db.execute(delete(models.ChatUser).where(models.ChatUser.id.not_in(user_ids)))
+        await db.execute(delete(models.UserChatBinding).where(models.UserChatBinding.chat_user_id.not_in(user_ids)))
     else:
         await db.execute(delete(models.ChatUser))
+        await db.execute(delete(models.UserChatBinding))
 
     await db.execute(delete(models.ChatUserGroupMember))
     membership_rows: list[models.ChatUserGroupMember] = []
@@ -230,6 +236,7 @@ async def sync_chat_user_catalog(
         db.add_all(membership_rows)
 
     await db.flush()
+    await sync_user_chat_bindings(db, chat_users=list(existing_users.values()))
     return list(existing_groups.values()), list(existing_users.values())
 
 
@@ -459,20 +466,189 @@ async def build_agent_chat_user_view(
     )
 
 
+async def find_chat_user_by_identity(
+    db: AsyncSession,
+    *,
+    username: str,
+    source: str,
+) -> models.ChatUser | None:
+    normalized_username = _normalize_identity(username)
+    normalized_source = _normalize_source(source)
+    if not normalized_username or not normalized_source:
+        return None
+
+    chat_users = (
+        await db.execute(select(models.ChatUser).where(models.ChatUser.username == username))
+    ).scalars().all()
+    for chat_user in chat_users:
+        if _normalize_source(chat_user.source) == normalized_source:
+            return chat_user
+    return None
+
+
+async def upsert_user_chat_binding(
+    db: AsyncSession,
+    *,
+    user: models.User,
+    chat_user: models.ChatUser,
+    binding_source: str,
+) -> models.UserChatBinding:
+    existing = (
+        await db.execute(
+            select(models.UserChatBinding).where(models.UserChatBinding.chat_user_id == chat_user.id)
+        )
+    ).scalar_one_or_none()
+    if existing:
+        if existing.user_id != user.id and existing.binding_source != "matched":
+            raise HTTPException(status_code=409, detail="该对话用户已绑定其他系统用户")
+        existing.user_id = user.id
+        existing.binding_source = binding_source
+        await db.flush()
+        return existing
+
+    binding = models.UserChatBinding(
+        user_id=user.id,
+        chat_user_id=chat_user.id,
+        binding_source=binding_source,
+    )
+    db.add(binding)
+    await db.flush()
+    return binding
+
+
+async def sync_user_chat_bindings(
+    db: AsyncSession,
+    *,
+    chat_users: list[models.ChatUser] | None = None,
+) -> int:
+    target_chat_users = chat_users
+    if target_chat_users is None:
+        target_chat_users = (await db.execute(select(models.ChatUser))).scalars().all()
+    if not target_chat_users:
+        await db.execute(
+            delete(models.UserChatBinding).where(models.UserChatBinding.binding_source == "matched")
+        )
+        await db.flush()
+        return 0
+
+    usernames = {
+        username
+        for chat_user in target_chat_users
+        for username in {str(chat_user.username or "").strip()}
+        if username
+    }
+    if not usernames:
+        return 0
+
+    users = (
+        await db.execute(
+            select(models.User).where(
+                or_(models.User.username.in_(usernames), models.User.account.in_(usernames))
+            )
+        )
+    ).scalars().all()
+    users_by_identity: dict[tuple[str, str], models.User] = {}
+    for user in users:
+        source_key = _normalize_source(user.source)
+        if not source_key:
+            continue
+        username_key = _normalize_identity(user.username)
+        account_key = _normalize_identity(user.account)
+        if username_key:
+            users_by_identity.setdefault((username_key, source_key), user)
+        if account_key:
+            users_by_identity.setdefault((account_key, source_key), user)
+
+    chat_user_ids = [chat_user.id for chat_user in target_chat_users if chat_user.id]
+    existing_bindings = {
+        binding.chat_user_id: binding
+        for binding in (
+            await db.execute(
+                select(models.UserChatBinding).where(models.UserChatBinding.chat_user_id.in_(chat_user_ids))
+            )
+        ).scalars().all()
+    }
+
+    matched_count = 0
+    matched_chat_ids: set[str] = set()
+    for chat_user in target_chat_users:
+        identity_key = (_normalize_identity(chat_user.username), _normalize_source(chat_user.source))
+        if not identity_key[0] or not identity_key[1]:
+            continue
+        user = users_by_identity.get(identity_key)
+        existing = existing_bindings.get(chat_user.id)
+        if not user:
+            if existing and existing.binding_source == "matched":
+                await db.delete(existing)
+            continue
+        matched_chat_ids.add(chat_user.id)
+        await upsert_user_chat_binding(db, user=user, chat_user=chat_user, binding_source="matched")
+        matched_count += 1
+
+    if chat_user_ids:
+        stale_bindings = (
+            await db.execute(
+                select(models.UserChatBinding).where(
+                    models.UserChatBinding.binding_source == "matched",
+                    models.UserChatBinding.chat_user_id.in_(chat_user_ids),
+                )
+            )
+        ).scalars().all()
+        for binding in stale_bindings:
+            if binding.chat_user_id not in matched_chat_ids:
+                await db.delete(binding)
+
+    await db.flush()
+    return matched_count
+
+
+async def list_user_synced_agent_ids_async(db: AsyncSession, *, user: models.User) -> list[str]:
+    cache_key = f"chat_visible_agent_ids:{user.id}"
+    cached = db.info.get(cache_key)
+    if cached is not None:
+        return cached
+
+    rows = (
+        await db.execute(
+            select(models.AgentChatUserAccess.agent_id)
+            .join(models.UserChatBinding, models.UserChatBinding.chat_user_id == models.AgentChatUserAccess.chat_user_id)
+            .join(models.Agent, models.Agent.id == models.AgentChatUserAccess.agent_id)
+            .where(
+                models.UserChatBinding.user_id == user.id,
+                models.AgentChatUserAccess.is_auth.is_(True),
+                models.Agent.is_synced.is_(True),
+            )
+            .distinct()
+        )
+    ).scalars().all()
+    values = [str(item) for item in rows if item]
+    db.info[cache_key] = values
+    return values
+
+
+async def user_can_view_synced_agent_async(
+    db: AsyncSession,
+    *,
+    user: models.User,
+    agent_id: str,
+) -> bool:
+    visible_ids = await list_user_synced_agent_ids_async(db, user=user)
+    return agent_id in set(visible_ids)
+
+
 async def resolve_sso_chat_user_identity(
     db: AsyncSession,
     *,
     provider: models.AuthProviderConfig,
     identity: dict[str, str],
-) -> tuple[models.User | None, dict[str, str] | None]:
+) -> models.ChatUser | None:
     username_candidates = {
         str(identity.get("username") or "").strip(),
         str(identity.get("account") or "").strip(),
-        str(identity.get("subject") or "").strip(),
     }
     username_candidates = {item for item in username_candidates if item}
     if not username_candidates:
-        return None, None
+        return None
 
     config = dict(provider.config or {})
     raw_source_candidates = {
@@ -484,41 +660,13 @@ async def resolve_sso_chat_user_identity(
     }
     source_candidates = {_normalize_source(item) for item in raw_source_candidates if item}
 
-    users = (
-        await db.execute(
-            select(models.User).where(
-                models.User.account.in_(username_candidates) | models.User.username.in_(username_candidates)
-            )
-        )
-    ).scalars().all()
-    for user in users:
-        if _normalize_source(user.source_provider) in source_candidates or _normalize_source(user.source) in source_candidates:
-            return user, None
-
     chat_users = (
         await db.execute(select(models.ChatUser).where(models.ChatUser.username.in_(username_candidates)))
     ).scalars().all()
-    matched_chat_user = None
     for chat_user in chat_users:
         if _normalize_source(chat_user.source) in source_candidates:
-            matched_chat_user = chat_user
-            break
-    if not matched_chat_user:
-        return None, None
-
-    email = str(matched_chat_user.email or "").strip()
-    if not email:
-        email = f"{matched_chat_user.username}@agentui.local"
-
-    identity_update = {
-        "account": matched_chat_user.username,
-        "username": matched_chat_user.nick_name or matched_chat_user.username,
-        "email": email,
-        "workspace": str(identity.get("workspace") or provider.default_workspace or "default"),
-        "subject": str(identity.get("subject") or matched_chat_user.id),
-        "source_provider": matched_chat_user.source,
-    }
-    return None, identity_update
+            return chat_user
+    return None
 
 
 async def build_agent_summary_with_sync_status(

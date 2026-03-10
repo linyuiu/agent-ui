@@ -99,10 +99,6 @@ export type SsoProvider = {
   key: string
   name: string
   protocol: SsoProviderProtocol
-  enabled: boolean
-  auto_create_user: boolean
-  default_role: string
-  default_workspace: string
   config: Record<string, unknown>
   field_mapping: Record<string, unknown>
   created_at: string
@@ -112,15 +108,30 @@ export type SsoProviderCreate = {
   key: string
   name: string
   protocol: SsoProviderProtocol
-  enabled?: boolean
-  auto_create_user?: boolean
-  default_role?: string
-  default_workspace?: string
   config?: Record<string, unknown>
   field_mapping?: Record<string, unknown>
 }
 
 export type SsoProviderUpdate = Partial<SsoProviderCreate>
+
+export type LoginMethod = 'local' | 'ldap' | 'cas' | 'oidc' | 'oauth2' | 'saml2'
+
+export type SystemAuthSetting = {
+  id: number
+  enabled_methods: LoginMethod[]
+  default_login_method: LoginMethod
+  auto_create_user: boolean
+  default_role: string
+  created_at: string
+  updated_at: string
+}
+
+export type SystemAuthSettingUpdate = {
+  enabled_methods: LoginMethod[]
+  default_login_method: LoginMethod
+  auto_create_user: boolean
+  default_role: string
+}
 
 export type SsoProviderTestRequest = {
   protocol: SsoProviderProtocol

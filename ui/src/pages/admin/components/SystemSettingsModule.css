@@ -1,0 +1,149 @@
+@import '../../../styles/shared.css';
+
+.settings-layout {
+  display: grid;
+  gap: 16px;
+}
+
+.settings-card {
+  border: 1px solid rgba(15, 40, 55, 0.16);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.78);
+  padding: 18px;
+  display: grid;
+  gap: 16px;
+}
+
+.settings-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.settings-card__header h3 {
+  margin: 0 0 6px;
+  font-size: 18px;
+  font-family: 'Space Grotesk', sans-serif;
+}
+
+.settings-card__header p {
+  margin: 0;
+  color: #66777d;
+  font-size: 14px;
+}
+
+.settings-list {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-item {
+  border: 1px solid rgba(15, 40, 55, 0.1);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.92);
+  padding: 16px;
+  display: grid;
+  gap: 14px;
+}
+
+.settings-item__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #223136;
+}
+
+.settings-label span {
+  color: #f0685b;
+}
+
+.method-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 22px;
+}
+
+.method-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #394c51;
+  font-size: 15px;
+}
+
+.method-option input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #0fb3b9;
+}
+
+.third-party-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 220px) minmax(0, 320px);
+  gap: 18px 28px;
+  align-items: end;
+}
+
+.checkbox-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  color: #394c51;
+}
+
+.checkbox-item input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #0fb3b9;
+}
+
+.select-field {
+  max-width: 320px;
+}
+
+.select-field .inline-dropdown {
+  width: 100%;
+}
+
+.select-field .filter-trigger.inline-trigger {
+  height: 40px;
+  box-sizing: border-box;
+}
+
+.select-field .filter-dropdown {
+  width: 100%;
+  max-width: 100%;
+  min-width: 100%;
+  box-sizing: border-box;
+}
+
+.settings-check {
+  padding: 0 2px;
+}
+
+@media (max-width: 960px) {
+  .settings-card__header {
+    flex-direction: column;
+  }
+
+  .third-party-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .select-field {
+    max-width: none;
+  }
+}

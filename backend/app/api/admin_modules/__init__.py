@@ -1,6 +1,7 @@
 from .permissions import router as permissions_router
 from .resources import router as resources_router
 from .sso_settings import router as sso_settings_router
+from .system_settings import router as system_settings_router
 from .sync_configs import router as sync_configs_router
 from .sync_tasks import router as sync_tasks_router
 from .users_roles_groups import router as users_roles_groups_router
@@ -12,6 +13,7 @@ ADMIN_MODULE_ROUTERS = (
     sync_configs_router,
     sync_tasks_router,
     sso_settings_router,
+    system_settings_router,
 )
 
 __all__ = ["ADMIN_MODULE_ROUTERS"]

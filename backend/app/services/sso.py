@@ -19,9 +19,11 @@ from starlette.concurrency import run_in_threadpool
 from .. import models, schemas, security
 from ..config import settings
 from ..permissions import get_user_role_names_async
-from .chat_user_sync import resolve_sso_chat_user_identity
+from .http_client import get_shared_async_client
+from .chat_user_sync import resolve_sso_chat_user_identity, upsert_user_chat_binding
 
 SSO_PROTOCOLS = {"ldap", "cas", "oidc", "oauth2", "saml2"}
+LOGIN_METHODS = {"local", *SSO_PROTOCOLS}
 PASSWORD_PROTOCOLS = {"ldap"}
 REDIRECT_PROTOCOLS = SSO_PROTOCOLS - PASSWORD_PROTOCOLS
 _SSO_TOKEN_ALGORITHM = "HS256"
@@ -42,6 +44,7 @@ _DEFAULT_MAPPING_KEYS = {
     "account": ("preferred_username", "username", "uid", "login", "id"),
     "workspace": ("workspace",),
 }
+DEFAULT_SSO_WORKSPACE = "default"
 
 
 class SsoBindRequiredError(Exception):
@@ -108,6 +111,13 @@ def normalize_protocol(raw: str) -> str:
     return protocol
 
 
+def normalize_login_method(raw: str) -> str:
+    method = str(raw or "").strip().lower()
+    if method not in LOGIN_METHODS:
+        raise HTTPException(status_code=400, detail=f"Unsupported login method: {method}")
+    return method
+
+
 def provider_login_mode(protocol: str) -> str:
     return "password" if normalize_protocol(protocol) in PASSWORD_PROTOCOLS else "redirect"
 
@@ -127,6 +137,106 @@ def normalize_mapping(raw: dict | None) -> dict[str, str]:
 
 def normalize_config(raw: dict | None) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
+
+
+def normalize_enabled_methods(raw: list[str] | None) -> list[str]:
+    seen: set[str] = set()
+    methods: list[str] = []
+    for item in raw or []:
+        method = normalize_login_method(item)
+        if method in seen:
+            continue
+        seen.add(method)
+        methods.append(method)
+    return methods or ["local"]
+
+
+async def ensure_system_auth_setting_async(db: AsyncSession) -> models.SystemAuthSetting:
+    setting = (
+        await db.execute(
+            select(models.SystemAuthSetting).order_by(models.SystemAuthSetting.id.asc()).limit(1)
+        )
+    ).scalar_one_or_none()
+    if not setting:
+        setting = models.SystemAuthSetting(
+            enabled_methods=["local"],
+            default_login_method="local",
+            auto_create_user=True,
+            default_role="user",
+        )
+        db.add(setting)
+        await db.flush()
+        return setting
+
+    changed = False
+    enabled_methods = normalize_enabled_methods(list(setting.enabled_methods or []))
+    if enabled_methods != list(setting.enabled_methods or []):
+        setting.enabled_methods = enabled_methods
+        changed = True
+
+    default_login_method = str(setting.default_login_method or "").strip().lower() or "local"
+    if default_login_method not in enabled_methods:
+        default_login_method = "local" if "local" in enabled_methods else enabled_methods[0]
+    if setting.default_login_method != default_login_method:
+        setting.default_login_method = default_login_method
+        changed = True
+
+    default_role = str(setting.default_role or "").strip() or "user"
+    if setting.default_role != default_role:
+        setting.default_role = default_role
+        changed = True
+
+    if changed:
+        await db.flush()
+    return setting
+
+
+async def get_system_auth_setting_async(db: AsyncSession) -> models.SystemAuthSetting:
+    return await ensure_system_auth_setting_async(db)
+
+
+def _provider_enabled(setting: models.SystemAuthSetting, provider: models.AuthProviderConfig) -> bool:
+    return normalize_protocol(provider.protocol) in normalize_enabled_methods(list(setting.enabled_methods or []))
+
+
+async def get_provider_bundle_async(
+    db: AsyncSession,
+    provider_key: str,
+    *,
+    enabled_only: bool = False,
+) -> tuple[models.AuthProviderConfig | None, models.SystemAuthSetting]:
+    setting = await ensure_system_auth_setting_async(db)
+    provider = (
+        await db.execute(
+            select(models.AuthProviderConfig).where(models.AuthProviderConfig.key == provider_key)
+        )
+    ).scalar_one_or_none()
+    if not provider:
+        return None, setting
+    if enabled_only and not _provider_enabled(setting, provider):
+        return None, setting
+    return provider, setting
+
+
+async def list_enabled_provider_bundles_async(
+    db: AsyncSession,
+) -> tuple[list[tuple[models.AuthProviderConfig, models.SystemAuthSetting]], models.SystemAuthSetting]:
+    setting = await ensure_system_auth_setting_async(db)
+    enabled_protocols = {
+        item for item in normalize_enabled_methods(list(setting.enabled_methods or [])) if item != "local"
+    }
+    if not enabled_protocols:
+        return [], setting
+    providers = (
+        await db.execute(
+            select(models.AuthProviderConfig).order_by(models.AuthProviderConfig.id.asc())
+        )
+    ).scalars().all()
+    return [
+        (provider, setting)
+        for provider in providers
+        if normalize_protocol(provider.protocol) in enabled_protocols
+    ], setting
 
 
 def mask_sensitive_dict(payload: dict[str, Any]) -> dict[str, Any]:
@@ -175,13 +285,23 @@ def build_provider_out(provider: models.AuthProviderConfig) -> schemas.SsoProvid
         key=provider.key,
         name=provider.name,
         protocol=protocol,
-        enabled=bool(provider.enabled),
-        auto_create_user=bool(provider.auto_create_user),
-        default_role=provider.default_role or "user",
-        default_workspace=provider.default_workspace or "default",
         config=mask_sensitive_dict(dict(provider.config or {})),
         field_mapping=dict(provider.field_mapping or {}),
         created_at=provider.created_at,
+    )
+
+
+def build_system_auth_setting_out(
+    setting: models.SystemAuthSetting,
+) -> schemas.SystemAuthSettingOut:
+    return schemas.SystemAuthSettingOut(
+        id=setting.id,
+        enabled_methods=normalize_enabled_methods(list(setting.enabled_methods or [])),
+        default_login_method=normalize_login_method(setting.default_login_method or "local"),
+        auto_create_user=bool(setting.auto_create_user),
+        default_role=setting.default_role or "user",
+        created_at=setting.created_at,
+        updated_at=setting.updated_at,
     )
 
 
@@ -192,6 +312,28 @@ def build_provider_public(provider: models.AuthProviderConfig) -> schemas.SsoPro
         name=provider.name,
         protocol=protocol,
         login_mode=provider_login_mode(protocol),
+    )
+
+
+def build_login_options_out(
+    setting: models.SystemAuthSetting,
+    providers: list[schemas.SsoProviderPublic],
+) -> schemas.SsoLoginOptions:
+    configured_methods = {provider.protocol for provider in providers}
+    enabled_methods = [
+        item
+        for item in normalize_enabled_methods(list(setting.enabled_methods or []))
+        if item == "local" or item in configured_methods
+    ]
+    if not enabled_methods:
+        enabled_methods = ["local"]
+    default_login_method = normalize_login_method(setting.default_login_method or "local")
+    if default_login_method not in enabled_methods:
+        default_login_method = "local" if "local" in enabled_methods else enabled_methods[0]
+    return schemas.SsoLoginOptions(
+        enabled_methods=enabled_methods,
+        default_login_method=default_login_method,
+        providers=providers,
     )
 
 
@@ -282,7 +424,7 @@ def identity_from_profile(provider: models.AuthProviderConfig, profile: dict[str
         subject = _first_claim(profile, ("sub", "id", "username", "user")) or username
         nick_name = _first_claim(profile, ("name", "displayName", "display_name", "cn")) or username
         email = _first_claim(profile, ("email", "mail"))
-        workspace = str(config.get("default_workspace") or provider.default_workspace or "default").strip() or "default"
+        workspace = DEFAULT_SSO_WORKSPACE
         account = username
     else:
         subject = _read_claim(profile, mapping.get("subject", "")) or _first_claim(profile, _DEFAULT_MAPPING_KEYS["subject"])
@@ -291,14 +433,14 @@ def identity_from_profile(provider: models.AuthProviderConfig, profile: dict[str
         email = _read_claim(profile, mapping.get("email", "")) or _first_claim(profile, _DEFAULT_MAPPING_KEYS["email"])
         account = _read_claim(profile, mapping.get("account", "")) or _first_claim(profile, _DEFAULT_MAPPING_KEYS["account"])
         workspace = _read_claim(profile, mapping.get("workspace", "")) or _first_claim(profile, _DEFAULT_MAPPING_KEYS["workspace"])
-        workspace = workspace or provider.default_workspace or "default"
+        workspace = workspace or DEFAULT_SSO_WORKSPACE
 
     username = str(username or account or subject).strip()
     subject = str(subject or username or account).strip()
     account = str(account or username).strip()
     nick_name = str(nick_name or username).strip()
     email = str(email or "").strip()
-    workspace = str(workspace or provider.default_workspace or "default").strip() or "default"
+    workspace = str(workspace or DEFAULT_SSO_WORKSPACE).strip() or DEFAULT_SSO_WORKSPACE
 
     if not username:
         raise HTTPException(status_code=400, detail="单点返回中缺少用户名")
@@ -384,7 +526,7 @@ def create_bind_token(provider: models.AuthProviderConfig, identity: dict[str, A
         "nick_name": str(identity.get("nick_name") or identity.get("username") or "").strip(),
         "email": str(identity.get("email") or "").strip(),
         "account": str(identity.get("account") or identity.get("username") or "").strip(),
-        "workspace": str(identity.get("workspace") or provider.default_workspace or "default").strip() or "default",
+        "workspace": str(identity.get("workspace") or DEFAULT_SSO_WORKSPACE).strip() or DEFAULT_SSO_WORKSPACE,
         "raw_profile": dict(identity.get("raw_profile") or {}),
         "exp": datetime.now(timezone.utc) + timedelta(minutes=15),
     }
@@ -406,11 +548,11 @@ async def _http_json(
     data: dict | None = None,
     headers: dict | None = None,
 ) -> dict:
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        if method == "POST":
-            resp = await client.post(url, data=data or {}, headers=headers or {})
-        else:
-            resp = await client.get(url, params=data or {}, headers=headers or {})
+    client = get_shared_async_client()
+    if method == "POST":
+        resp = await client.post(url, data=data or {}, headers=headers or {})
+    else:
+        resp = await client.get(url, params=data or {}, headers=headers or {})
     if resp.status_code >= 400:
         raise HTTPException(status_code=400, detail=f"上游认证服务异常: {resp.status_code}")
     payload = resp.json()
@@ -512,11 +654,11 @@ async def _exchange_oidc_code(provider: models.AuthProviderConfig, code: str) ->
     userinfo_url = str(config.get("userinfo_url") or "").strip()
     access_token = str(token_data.get("access_token") or "").strip()
     if userinfo_url and access_token:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.get(
-                userinfo_url,
-                headers={"Authorization": f"Bearer {access_token}", "accept": "application/json"},
-            )
+        client = get_shared_async_client()
+        resp = await client.get(
+            userinfo_url,
+            headers={"Authorization": f"Bearer {access_token}", "accept": "application/json"},
+        )
         if resp.status_code < 400:
             userinfo = resp.json()
             if isinstance(userinfo, dict):
@@ -755,12 +897,15 @@ async def _create_user_from_identity(
     db: AsyncSession,
     *,
     provider: models.AuthProviderConfig,
+    setting: models.SystemAuthSetting,
     identity: dict[str, Any],
+    chat_user: models.ChatUser | None = None,
 ) -> models.User:
-    role_name = await _ensure_role_exists(db, provider.default_role or "user")
+    role_name = await _ensure_role_exists(db, setting.default_role or "user")
     username = str(identity.get("username") or "").strip()
     account = await _unique_account(db, str(identity.get("account") or username).strip())
     email = await _unique_email(db, str(identity.get("email") or "").strip(), username)
+    source_value = str(chat_user.source or "").strip() if chat_user else ""
     user = models.User(
         account=account,
         username=username,
@@ -768,10 +913,10 @@ async def _create_user_from_identity(
         password_hash=await security.hash_password_async(uuid4().hex),
         role=role_name,
         status="active",
-        source=normalize_protocol(provider.protocol),
+        source=source_value or normalize_protocol(provider.protocol),
         source_provider=provider.key,
         source_subject=str(identity.get("subject") or "").strip(),
-        workspace=str(identity.get("workspace") or provider.default_workspace or "default").strip() or "default",
+        workspace=str(identity.get("workspace") or DEFAULT_SSO_WORKSPACE).strip() or DEFAULT_SSO_WORKSPACE,
     )
     db.add(user)
     await db.flush()
@@ -790,12 +935,15 @@ async def _existing_user_by_username(db: AsyncSession, username: str) -> models.
 async def upsert_sso_user_async(
     db: AsyncSession,
     provider: models.AuthProviderConfig,
+    setting: models.SystemAuthSetting,
     identity: dict[str, Any],
     *,
     redirect: str = "/home/agents",
 ) -> models.User:
     provider_protocol = normalize_protocol(provider.protocol)
     merged_identity = dict(identity)
+    username = str(merged_identity.get("username") or "").strip()
+    chat_user = await resolve_sso_chat_user_identity(db, provider=provider, identity=merged_identity)
 
     binding = await _find_binding(
         db,
@@ -807,27 +955,11 @@ async def upsert_sso_user_async(
         if not user:
             raise HTTPException(status_code=404, detail="绑定的系统用户不存在")
         await _sync_existing_binding(binding, provider=provider, identity=merged_identity)
+        if chat_user:
+            await upsert_user_chat_binding(db, user=user, chat_user=chat_user, binding_source="sso")
         await db.flush()
         return user
 
-    matched_user, identity_override = await resolve_sso_chat_user_identity(db, provider=provider, identity=merged_identity)
-    if identity_override:
-        merged_identity.update(identity_override)
-
-    if matched_user:
-        matched_user.status = "active"
-        if not matched_user.email:
-            matched_user.email = await _unique_email(
-                db,
-                str(merged_identity.get("email") or "").strip(),
-                matched_user.username,
-            )
-        await _create_binding(db, user=matched_user, provider=provider, identity=merged_identity)
-        matched_user.source_provider = matched_user.source_provider or provider.key
-        await db.flush()
-        return matched_user
-
-    username = str(merged_identity.get("username") or "").strip()
     existing_user = await _existing_user_by_username(db, username)
     if existing_user:
         message = (
@@ -844,11 +976,19 @@ async def upsert_sso_user_async(
             message=message,
         )
 
-    if not provider.auto_create_user:
+    if not setting.auto_create_user:
         raise HTTPException(status_code=403, detail="该单点配置不允许自动创建用户")
 
-    user = await _create_user_from_identity(db, provider=provider, identity=merged_identity)
+    user = await _create_user_from_identity(
+        db,
+        provider=provider,
+        setting=setting,
+        identity=merged_identity,
+        chat_user=chat_user,
+    )
     await _create_binding(db, user=user, provider=provider, identity=merged_identity)
+    if chat_user:
+        await upsert_user_chat_binding(db, user=user, chat_user=chat_user, binding_source="sso")
     await db.flush()
     return user
 
@@ -881,5 +1021,8 @@ async def bind_sso_identity_async(
         "raw_profile": dict(payload.get("raw_profile") or {}),
     }
     binding = await _create_binding(db, user=current_user, provider=provider, identity=identity)
+    chat_user = await resolve_sso_chat_user_identity(db, provider=provider, identity=identity)
+    if chat_user:
+        await upsert_user_chat_binding(db, user=current_user, chat_user=chat_user, binding_source="sso")
     await db.flush()
     return binding

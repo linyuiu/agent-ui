@@ -10,12 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ... import models, schemas
 from ...auth import get_current_user
 from ...db import get_db
-from ...services.chat_user_sync import create_agent_chat_user_sync_task, sync_task_out
-from ...tasks import enqueue_agent_chat_user_sync
+from ...services.agent_sync import create_fit2cloud_agent_sync_task
+from ...services.chat_user_sync import sync_task_out
+from ...tasks import enqueue_fit2cloud_agent_sync
 from .common import (
     fit2cloud_fetch_async,
     mask_token,
-    sync_fit2cloud_workspace_agents_async,
 )
 from ...permissions import require_manage_menu_async
 
@@ -280,56 +280,35 @@ async def sync_fit2cloud_agents_by_config(
             or str(workspace_id)
         )
 
-        imported, updated, errors = await sync_fit2cloud_workspace_agents_async(
-            db,
-            current_user,
-            base_url=base_url,
-            token=config.token,
-            config_id=config.id,
-            workspace_id=str(workspace_id),
-            workspace_name=str(workspace_name),
-            apps=target_apps,
-        )
-        imported_total += imported
-        updated_total += updated
-        all_errors.extend(errors)
-
-        if payload.sync_chat_users:
-            target_app_ids = [str(item.get("id")) for item in target_apps if item.get("id")]
-            if not target_app_ids:
+        for app in target_apps:
+            application_id = str(app.get("id") or "").strip()
+            if not application_id:
                 continue
-            synced_agents = (
-                await db.execute(
-                    select(models.Agent).where(
-                        models.Agent.sync_config_id == config.id,
-                        models.Agent.workspace_id == str(workspace_id),
-                        models.Agent.external_id.in_(target_app_ids),
-                    )
-                )
-            ).scalars().all()
-            for agent in synced_agents:
-                task = await create_agent_chat_user_sync_task(
-                    db,
-                    current_user=current_user,
-                    agent=agent,
-                    config_id=config.id,
-                )
-                created_tasks.append(task)
+            task = await create_fit2cloud_agent_sync_task(
+                db,
+                current_user=current_user,
+                config_id=config.id,
+                workspace_id=str(workspace_id),
+                workspace_name=str(workspace_name),
+                application_id=application_id,
+                application_name=str(app.get("name") or application_id),
+                sync_chat_users=bool(payload.sync_chat_users),
+            )
+            created_tasks.append(task)
 
     await db.commit()
     for task in created_tasks:
         try:
-            celery_task_id = enqueue_agent_chat_user_sync(task.id)
+            celery_task_id = enqueue_fit2cloud_agent_sync(task.id)
             task.celery_task_id = celery_task_id
         except Exception as exc:  # pragma: no cover - defensive scheduling branch
             all_errors.append(f"task {task.id}: {exc}")
     if created_tasks:
         await db.commit()
-    total = imported_total + updated_total
     return schemas.AgentSyncResponse(
-        imported=imported_total,
-        updated=updated_total,
-        total=total,
+        imported=0,
+        updated=0,
+        total=len(created_tasks),
         errors=all_errors,
         tasks=[sync_task_out(task) for task in created_tasks],
     )

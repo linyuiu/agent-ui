@@ -36,11 +36,11 @@
           <template v-if="activeProtocol === 'ldap'">
             <div class="field">
               <label>LDAP 地址 <span class="required">*</span></label>
-              <input v-model="forms.ldap.server_url" type="text" placeholder="ldap://10.1.11.41" required />
+              <input v-model="forms.ldap.server_url" type="text" required />
             </div>
             <div class="field">
               <label>绑定 DN</label>
-              <input v-model="forms.ldap.bind_dn" type="text" placeholder="cn=admin,dc=example,dc=com" />
+              <input v-model="forms.ldap.bind_dn" type="text" />
             </div>
             <div class="field">
               <label>绑定密码</label>
@@ -48,30 +48,59 @@
                 <input
                   v-model="forms.ldap.bind_password"
                   :type="showSecret.ldap ? 'text' : 'password'"
-                  placeholder="绑定账号密码"
                 />
                 <button class="password-toggle" type="button" @click="showSecret.ldap = !showSecret.ldap">
-                  {{ showSecret.ldap ? '隐藏' : '显示' }}
+                  <svg v-if="showSecret.ldap" class="eye-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.6"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                    <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.6" />
+                  </svg>
+                  <svg v-else class="eye-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M3 4.5 21 19.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                    <path
+                      d="M6.6 7.3C4.2 9 2.7 12 2.7 12s3.5 7 10 7c2.2 0 4.1-.7 5.6-1.7"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.6"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                    <path
+                      d="M9 5.5a9.7 9.7 0 0 1 3-.5c6.5 0 10 7 10 7s-1.4 2.7-4.4 4.7"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.6"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
                 </button>
               </div>
             </div>
             <div class="field">
               <label>用户 OU <span class="required">*</span></label>
-              <input v-model="forms.ldap.base_dn" type="text" placeholder="ou=users,dc=example,dc=com" required />
+              <input v-model="forms.ldap.base_dn" type="text" required />
             </div>
             <div class="field">
               <label>用户过滤器</label>
-              <input v-model="forms.ldap.user_filter" type="text" placeholder="(uid={account})" />
+              <input v-model="forms.ldap.user_filter" type="text" />
             </div>
             <div class="field">
               <label>账号属性</label>
-              <input v-model="forms.ldap.account_attr" type="text" placeholder="uid" />
+              <input v-model="forms.ldap.account_attr" type="text" />
             </div>
             <div class="field full-row">
               <label>字段映射</label>
               <textarea
                 v-model="forms.ldap.field_mapping_text"
-                rows="4"
+                rows="1"
+                wrap="off"
                 placeholder='{"username":"uid","nick_name":"cn","email":"mail"}'
               ></textarea>
               <p class="field-hint">LDAP 可按需配置字段映射，未填写时将使用默认字段名。</p>
@@ -81,20 +110,19 @@
           <template v-else-if="activeProtocol === 'cas'">
             <div class="field">
               <label>IdpUri <span class="required">*</span></label>
-              <input v-model="forms.cas.cas_base_url" type="text" placeholder="http://47.120.55.164:8083/cas" required />
+              <input v-model="forms.cas.cas_base_url" type="text" required />
             </div>
             <div class="field">
               <label>验证地址 <span class="required">*</span></label>
               <input
                 v-model="forms.cas.validate_url"
                 type="text"
-                placeholder="http://47.120.55.164:8083/cas/serviceValidate"
                 required
               />
             </div>
             <div class="field full-row">
               <label>回调地址 <span class="required">*</span></label>
-              <input v-model="forms.cas.callback_url" type="text" :placeholder="defaultCallback('cas')" required />
+              <input v-model="forms.cas.callback_url" type="text" :placeholder="callbackExample('cas')" required />
               <p class="field-hint">CAS 使用默认返回字段，不需要单独配置字段映射。</p>
             </div>
           </template>
@@ -105,17 +133,16 @@
               <input
                 v-model="forms.oidc.discovery_url"
                 type="text"
-                placeholder="https://idp.example.com/.well-known/openid-configuration"
                 required
               />
             </div>
             <div class="field">
               <label>连接范围</label>
-              <input v-model="forms.oidc.scope" type="text" placeholder="openid profile email" />
+              <input v-model="forms.oidc.scope" type="text" />
             </div>
             <div class="field">
               <label>客户端 ID <span class="required">*</span></label>
-              <input v-model="forms.oidc.client_id" type="text" placeholder="client-id" required />
+              <input v-model="forms.oidc.client_id" type="text" required />
             </div>
             <div class="field">
               <label>客户端密钥</label>
@@ -123,10 +150,38 @@
                 <input
                   v-model="forms.oidc.client_secret"
                   :type="showSecret.oidc ? 'text' : 'password'"
-                  placeholder="client-secret"
                 />
                 <button class="password-toggle" type="button" @click="showSecret.oidc = !showSecret.oidc">
-                  {{ showSecret.oidc ? '隐藏' : '显示' }}
+                  <svg v-if="showSecret.oidc" class="eye-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.6"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                    <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.6" />
+                  </svg>
+                  <svg v-else class="eye-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M3 4.5 21 19.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                    <path
+                      d="M6.6 7.3C4.2 9 2.7 12 2.7 12s3.5 7 10 7c2.2 0 4.1-.7 5.6-1.7"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.6"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                    <path
+                      d="M9 5.5a9.7 9.7 0 0 1 3-.5c6.5 0 10 7 10 7s-1.4 2.7-4.4 4.7"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.6"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
                 </button>
               </div>
             </div>
@@ -134,14 +189,15 @@
               <label>字段映射 <span class="required">*</span></label>
               <textarea
                 v-model="forms.oidc.field_mapping_text"
-                rows="4"
+                rows="1"
+                wrap="off"
                 placeholder='{"username":"preferred_username","nick_name":"name","email":"email"}'
                 required
               ></textarea>
             </div>
             <div class="field full-row">
               <label>回调地址 <span class="required">*</span></label>
-              <input v-model="forms.oidc.callback_url" type="text" :placeholder="defaultCallback('oidc')" required />
+              <input v-model="forms.oidc.callback_url" type="text" :placeholder="callbackExample('oidc')" required />
             </div>
           </template>
 
@@ -151,7 +207,6 @@
               <input
                 v-model="forms.oauth2.authorize_url"
                 type="text"
-                placeholder="https://github.com/login/oauth/authorize"
                 required
               />
             </div>
@@ -160,26 +215,24 @@
               <input
                 v-model="forms.oauth2.token_url"
                 type="text"
-                placeholder="https://github.com/login/oauth/access_token"
                 required
               />
             </div>
-            <div class="field full-row">
+            <div class="field">
               <label>用户信息端地址 <span class="required">*</span></label>
               <input
                 v-model="forms.oauth2.userinfo_url"
                 type="text"
-                placeholder="https://api.github.com/user"
                 required
               />
             </div>
             <div class="field">
               <label>连接范围</label>
-              <input v-model="forms.oauth2.scope" type="text" placeholder="user:email" />
+              <input v-model="forms.oauth2.scope" type="text" />
             </div>
             <div class="field">
               <label>客户端 ID <span class="required">*</span></label>
-              <input v-model="forms.oauth2.client_id" type="text" placeholder="client-id" required />
+              <input v-model="forms.oauth2.client_id" type="text" required />
             </div>
             <div class="field">
               <label>客户端密钥</label>
@@ -187,10 +240,38 @@
                 <input
                   v-model="forms.oauth2.client_secret"
                   :type="showSecret.oauth2 ? 'text' : 'password'"
-                  placeholder="client-secret"
                 />
                 <button class="password-toggle" type="button" @click="showSecret.oauth2 = !showSecret.oauth2">
-                  {{ showSecret.oauth2 ? '隐藏' : '显示' }}
+                  <svg v-if="showSecret.oauth2" class="eye-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.6"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                    <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.6" />
+                  </svg>
+                  <svg v-else class="eye-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M3 4.5 21 19.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                    <path
+                      d="M6.6 7.3C4.2 9 2.7 12 2.7 12s3.5 7 10 7c2.2 0 4.1-.7 5.6-1.7"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.6"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                    <path
+                      d="M9 5.5a9.7 9.7 0 0 1 3-.5c6.5 0 10 7 10 7s-1.4 2.7-4.4 4.7"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.6"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
                 </button>
               </div>
             </div>
@@ -198,7 +279,8 @@
               <label>字段映射 <span class="required">*</span></label>
               <textarea
                 v-model="forms.oauth2.field_mapping_text"
-                rows="4"
+                rows="1"
+                wrap="off"
                 placeholder='{"username":"login","nick_name":"name","email":"email"}'
                 required
               ></textarea>
@@ -208,7 +290,7 @@
               <input
                 v-model="forms.oauth2.callback_url"
                 type="text"
-                :placeholder="defaultCallback('oauth2')"
+                :placeholder="callbackExample('oauth2')"
                 required
               />
             </div>
@@ -217,21 +299,22 @@
           <template v-else>
             <div class="field">
               <label>SSO 地址 <span class="required">*</span></label>
-              <input v-model="forms.saml2.sso_url" type="text" placeholder="https://idp.example.com/saml/sso" required />
+              <input v-model="forms.saml2.sso_url" type="text" required />
             </div>
             <div class="field">
               <label>RelayState 参数名</label>
-              <input v-model="forms.saml2.relay_state_key" type="text" placeholder="RelayState" />
+              <input v-model="forms.saml2.relay_state_key" type="text" />
             </div>
             <div class="field">
               <label>ACS 参数名</label>
-              <input v-model="forms.saml2.acs_key" type="text" placeholder="acs" />
+              <input v-model="forms.saml2.acs_key" type="text" />
             </div>
             <div class="field full-row">
               <label>字段映射 <span class="required">*</span></label>
               <textarea
                 v-model="forms.saml2.field_mapping_text"
-                rows="4"
+                rows="1"
+                wrap="off"
                 placeholder='{"username":"NameID","nick_name":"displayName","email":"email"}'
                 required
               ></textarea>
@@ -241,30 +324,11 @@
               <input
                 v-model="forms.saml2.callback_url"
                 type="text"
-                :placeholder="defaultCallback('saml2')"
+                :placeholder="callbackExample('saml2')"
                 required
               />
             </div>
           </template>
-
-          <div class="common-settings full-row">
-            <label class="checkbox-item">
-              <input v-model="currentForm.enabled" type="checkbox" />
-              启用 {{ activeTabLabel }} 认证
-            </label>
-            <label class="checkbox-item">
-              <input v-model="currentForm.auto_create_user" type="checkbox" />
-              自动创建用户
-            </label>
-            <div class="field compact-field">
-              <label>默认角色</label>
-              <input v-model="currentForm.default_role" type="text" placeholder="user" />
-            </div>
-            <div class="field compact-field">
-              <label>默认工作空间</label>
-              <input v-model="currentForm.default_workspace" type="text" placeholder="default" />
-            </div>
-          </div>
 
           <div class="button-row full-row">
             <button class="primary" type="submit" :disabled="saving || loading">
@@ -282,7 +346,7 @@
         <p v-if="error" class="state error">{{ error }}</p>
         <p v-if="success" class="state success">{{ success }}</p>
         <p class="state current-config">
-          当前配置：{{ currentProvider ? `${currentProvider.name}（${currentProvider.enabled ? '已启用' : '未启用'}）` : '未保存' }}
+          当前配置：{{ currentProvider ? currentProvider.name : '未保存' }}
         </p>
       </div>
     </div>
@@ -320,14 +384,7 @@ import type { SsoProvider, SsoProviderCreate, SsoProviderProtocol } from '../../
 
 type ProtocolTab = { protocol: SsoProviderProtocol; label: string }
 
-type CommonForm = {
-  enabled: boolean
-  auto_create_user: boolean
-  default_role: string
-  default_workspace: string
-}
-
-type MappingForm = CommonForm & { field_mapping_text: string }
+type MappingForm = { field_mapping_text: string }
 
 type LdapForm = MappingForm & {
   server_url: string
@@ -338,7 +395,7 @@ type LdapForm = MappingForm & {
   account_attr: string
 }
 
-type CasForm = CommonForm & {
+type CasForm = {
   cas_base_url: string
   validate_url: string
   callback_url: string
@@ -410,61 +467,50 @@ const showSecret = reactive<Record<'ldap' | 'oidc' | 'oauth2', boolean>>({
   oauth2: false,
 })
 
-const defaultCommon = (): CommonForm => ({
-  enabled: false,
-  auto_create_user: true,
-  default_role: 'user',
-  default_workspace: 'default',
-})
-
 const defaultCallback = (protocol: SsoProviderProtocol) => `${apiBase}/auth/sso/callback/${protocol}`
+const callbackExample = (protocol: SsoProviderProtocol) => `https://your-domain/auth/sso/callback/${protocol}`
 
 const createDefaultLdapForm = (): LdapForm => ({
-  ...defaultCommon(),
   server_url: '',
   bind_dn: '',
   bind_password: '',
   base_dn: '',
-  user_filter: '(uid={account})',
-  account_attr: 'uid',
+  user_filter: '',
+  account_attr: '',
   field_mapping_text: '{"username":"uid","nick_name":"cn","email":"mail"}',
 })
 
 const createDefaultCasForm = (): CasForm => ({
-  ...defaultCommon(),
   cas_base_url: '',
   validate_url: '',
-  callback_url: defaultCallback('cas'),
+  callback_url: '',
 })
 
 const createDefaultOidcForm = (): OidcForm => ({
-  ...defaultCommon(),
   discovery_url: '',
   client_id: '',
   client_secret: '',
-  scope: 'openid profile email',
-  callback_url: defaultCallback('oidc'),
+  scope: '',
+  callback_url: '',
   field_mapping_text: '{"username":"preferred_username","nick_name":"name","email":"email"}',
 })
 
 const createDefaultOauth2Form = (): Oauth2Form => ({
-  ...defaultCommon(),
   authorize_url: '',
   token_url: '',
   userinfo_url: '',
-  scope: 'user:email',
+  scope: '',
   client_id: '',
   client_secret: '',
-  callback_url: defaultCallback('oauth2'),
+  callback_url: '',
   field_mapping_text: '{"username":"login","nick_name":"name","email":"email"}',
 })
 
 const createDefaultSaml2Form = (): Saml2Form => ({
-  ...defaultCommon(),
   sso_url: '',
-  relay_state_key: 'RelayState',
-  acs_key: 'acs',
-  callback_url: defaultCallback('saml2'),
+  relay_state_key: '',
+  acs_key: '',
+  callback_url: '',
   field_mapping_text: '{"username":"NameID","nick_name":"displayName","email":"email"}',
 })
 
@@ -480,7 +526,6 @@ const activeTabLabel = computed(
   () => protocolTabs.find((tab) => tab.protocol === activeProtocol.value)?.label || activeProtocol.value,
 )
 const currentProvider = computed(() => providers.value.find((item) => item.protocol === activeProtocol.value) || null)
-const currentForm = computed(() => forms[activeProtocol.value])
 
 const readText = (payload: Record<string, unknown>, key: string, fallback = '') => {
   const value = payload[key]
@@ -509,15 +554,9 @@ const hydrateFormsFromProviders = () => {
   for (const provider of providers.value) {
     const config = (provider.config || {}) as Record<string, unknown>
     const mapping = (provider.field_mapping || {}) as Record<string, unknown>
-    const common = {
-      enabled: !!provider.enabled,
-      auto_create_user: !!provider.auto_create_user,
-      default_role: provider.default_role || 'user',
-      default_workspace: provider.default_workspace || 'default',
-    }
 
     if (provider.protocol === 'ldap') {
-      Object.assign(forms.ldap, common, {
+      Object.assign(forms.ldap, {
         server_url: readText(config, 'server_url'),
         bind_dn: readText(config, 'bind_dn'),
         bind_password: readText(config, 'bind_password'),
@@ -530,7 +569,7 @@ const hydrateFormsFromProviders = () => {
     }
 
     if (provider.protocol === 'cas') {
-      Object.assign(forms.cas, common, {
+      Object.assign(forms.cas, {
         cas_base_url: readText(config, 'cas_base_url') || readText(config, 'idp_uri'),
         validate_url: readText(config, 'validate_url'),
         callback_url: readText(config, 'callback_url', defaultCallback('cas')),
@@ -539,7 +578,7 @@ const hydrateFormsFromProviders = () => {
     }
 
     if (provider.protocol === 'oidc') {
-      Object.assign(forms.oidc, common, {
+      Object.assign(forms.oidc, {
         discovery_url: readText(config, 'discovery_url') || readText(config, 'issuer'),
         client_id: readText(config, 'client_id'),
         client_secret: readText(config, 'client_secret'),
@@ -551,7 +590,7 @@ const hydrateFormsFromProviders = () => {
     }
 
     if (provider.protocol === 'oauth2') {
-      Object.assign(forms.oauth2, common, {
+      Object.assign(forms.oauth2, {
         authorize_url: readText(config, 'authorize_url'),
         token_url: readText(config, 'token_url'),
         userinfo_url: readText(config, 'userinfo_url'),
@@ -564,7 +603,7 @@ const hydrateFormsFromProviders = () => {
       continue
     }
 
-    Object.assign(forms.saml2, common, {
+    Object.assign(forms.saml2, {
       sso_url: readText(config, 'sso_url'),
       relay_state_key: readText(config, 'relay_state_key', 'RelayState'),
       acs_key: readText(config, 'acs_key', 'acs'),
@@ -687,10 +726,6 @@ const buildSavePayload = (protocol: SsoProviderProtocol): SsoProviderCreate => (
   key: protocol,
   name: protocolLabels[protocol],
   protocol,
-  enabled: currentForm.value.enabled,
-  auto_create_user: currentForm.value.auto_create_user,
-  default_role: currentForm.value.default_role.trim() || 'user',
-  default_workspace: currentForm.value.default_workspace.trim() || 'default',
   config: buildConfigByProtocol(protocol),
   field_mapping: buildFieldMapping(protocol),
 })

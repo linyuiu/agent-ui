@@ -13,7 +13,7 @@ from .common import normalize_roles
 router = APIRouter()
 
 
-def _admin_user_out(user: models.User, roles: list[str]) -> schemas.AdminUserOut:
+def _admin_user_out(user: models.User, roles: list[str], bound_providers: list[str]) -> schemas.AdminUserOut:
     return schemas.AdminUserOut(
         id=user.id,
         account=user.account,
@@ -25,7 +25,7 @@ def _admin_user_out(user: models.User, roles: list[str]) -> schemas.AdminUserOut
         source=user.source,
         source_provider=user.source_provider or "local",
         workspace=user.workspace,
-        bound_providers=[],
+        bound_providers=bound_providers,
         created_at=user.created_at,
     )
 
@@ -43,6 +43,22 @@ async def _fetch_user_roles_map(db: AsyncSession, user_ids: list[int]) -> dict[i
     grouped: dict[int, list[str]] = {user_id: [] for user_id in user_ids}
     for user_id, role_name in rows:
         grouped.setdefault(int(user_id), []).append(str(role_name))
+    return grouped
+
+
+async def _fetch_bound_providers_map(db: AsyncSession, user_ids: list[int]) -> dict[int, list[str]]:
+    if not user_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(models.UserSsoBinding.user_id, models.UserSsoBinding.provider_key)
+            .where(models.UserSsoBinding.user_id.in_(user_ids))
+            .order_by(models.UserSsoBinding.user_id.asc(), models.UserSsoBinding.provider_key.asc())
+        )
+    ).all()
+    grouped: dict[int, list[str]] = {user_id: [] for user_id in user_ids}
+    for user_id, provider_key in rows:
+        grouped.setdefault(int(user_id), []).append(str(provider_key))
     return grouped
 
 
@@ -103,8 +119,17 @@ async def list_users(
 ) -> list[schemas.AdminUserOut]:
     await require_menu_action_async(db, current_user, action="view", menu_id="admin")
     users = (await db.execute(select(models.User).order_by(models.User.id.asc()))).scalars().all()
-    role_map = await _fetch_user_roles_map(db, [user.id for user in users])
-    return [_admin_user_out(user, role_map.get(user.id, [user.role] if user.role else [])) for user in users]
+    user_ids = [user.id for user in users]
+    role_map = await _fetch_user_roles_map(db, user_ids)
+    binding_map = await _fetch_bound_providers_map(db, user_ids)
+    return [
+        _admin_user_out(
+            user,
+            role_map.get(user.id, [user.role] if user.role else []),
+            binding_map.get(user.id, []),
+        )
+        for user in users
+    ]
 
 
 @router.post("/users", response_model=schemas.AdminUserOut, status_code=201)
@@ -154,7 +179,7 @@ async def create_user(
     assigned_roles = await _set_user_roles(db, user, role_names)
     await db.commit()
     await db.refresh(user)
-    return _admin_user_out(user, assigned_roles)
+    return _admin_user_out(user, assigned_roles, [])
 
 
 @router.put("/users/{user_id}", response_model=schemas.AdminUserOut)
@@ -217,7 +242,14 @@ async def update_user(
 
     await db.commit()
     await db.refresh(user)
-    return _admin_user_out(user, await get_user_role_names_async(db, user))
+    bound_providers = (
+        await db.execute(
+            select(models.UserSsoBinding.provider_key)
+            .where(models.UserSsoBinding.user_id == user.id)
+            .order_by(models.UserSsoBinding.provider_key.asc())
+        )
+    ).scalars().all()
+    return _admin_user_out(user, await get_user_role_names_async(db, user), [str(item) for item in bound_providers])
 
 
 @router.delete("/users/{user_id}")

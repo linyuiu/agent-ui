@@ -12,7 +12,9 @@ from .entities import (
     Policy,
     Role,
     SyncTask,
+    SystemAuthSetting,
     User,
+    UserChatBinding,
     UserSsoBinding,
     UserRole,
 )
@@ -31,7 +33,9 @@ __all__ = [
     "Policy",
     "Role",
     "SyncTask",
+    "SystemAuthSetting",
     "User",
+    "UserChatBinding",
     "UserSsoBinding",
     "UserRole",
 ]

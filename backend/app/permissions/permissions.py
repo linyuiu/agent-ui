@@ -533,8 +533,15 @@ def summarize_permissions(db: Session, user: User) -> dict:
 
 
 async def summarize_permissions_async(db: AsyncSession, user: User) -> dict:
+    role_names = await get_user_role_names_async(db, user)
+    super_admin = is_super_admin(user)
+    from ..services.chat_user_sync import list_user_synced_agent_ids_async
+
     if is_super_admin(user):
         return {
+            "roles": role_names,
+            "is_super_admin": True,
+            "synced_agent_ids": await _resource_ids_async(db, "agent"),
             "menus": [
                 {"menu_id": menu_id, "actions": ["view", "edit", "manage"]}
                 for menu_id in sorted(MENU_IDS)
@@ -560,20 +567,49 @@ async def summarize_permissions_async(db: AsyncSession, user: User) -> dict:
             menus.append({"menu_id": menu_id, "actions": _mask_to_actions(mask)})
 
     resources: list[dict] = []
+    resource_actions: dict[tuple[str, str | None], set[str]] = {}
+    resource_items: dict[tuple[str, str | None], dict] = {}
     for (scope, resource_type, resource_id), mask in sorted(
         access.items(), key=lambda item: (item[0][1], item[0][2] or "")
     ):
         if scope != "resource" or resource_type not in RESOURCE_TYPES or not mask:
             continue
-        resources.append(
-            {
-                "resource_type": resource_type,
-                "resource_id": resource_id,
-                "actions": _mask_to_actions(mask),
-            }
-        )
+        actions = set(_mask_to_actions(mask))
+        resource_actions[(resource_type, resource_id)] = actions
+        item = {
+            "resource_type": resource_type,
+            "resource_id": resource_id,
+            "actions": sorted(actions, key=lambda action: ACTION_ORDER.get(action, 0)),
+        }
+        resource_items[(resource_type, resource_id)] = item
+        resources.append(item)
 
-    return {"menus": menus, "resources": resources}
+    synced_agent_ids = await list_user_synced_agent_ids_async(db, user=user)
+    if ("agent", None) not in resource_actions:
+        for agent_id in synced_agent_ids:
+            key = ("agent", agent_id)
+            actions = resource_actions.setdefault(key, set())
+            if "view" in actions:
+                continue
+            actions.add("view")
+            item = resource_items.get(key)
+            if item is None:
+                item = {
+                    "resource_type": "agent",
+                    "resource_id": agent_id,
+                    "actions": [],
+                }
+                resource_items[key] = item
+                resources.append(item)
+            item["actions"] = sorted(actions, key=lambda action: ACTION_ORDER.get(action, 0))
+
+    return {
+        "roles": role_names,
+        "is_super_admin": super_admin,
+        "synced_agent_ids": synced_agent_ids,
+        "menus": menus,
+        "resources": resources,
+    }
 
 
 async def _resource_ids_async(db: AsyncSession, resource_type: str) -> list[str]:
