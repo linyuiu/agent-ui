@@ -330,6 +330,7 @@ class AgentChatUserEntry(BaseModel):
 class AgentChatUserGroupView(BaseModel):
     id: str
     name: str
+    authorized_count: int = 0
     users: list[AgentChatUserEntry] = Field(default_factory=list)
 
 
@@ -338,6 +339,18 @@ class AgentChatUserView(BaseModel):
     groups: list[AgentChatUserGroupView] = Field(default_factory=list)
     total_users: int = 0
     last_synced_at: datetime | None = None
+    manageable: bool = False
+    sync_supported: bool = False
+
+
+class AgentChatUserAccessUpdateItem(BaseModel):
+    chat_user_id: str = Field(min_length=1, max_length=255)
+    is_auth: bool
+
+
+class AgentChatUserAccessUpdateRequest(BaseModel):
+    group_id: str = Field(min_length=1, max_length=255)
+    users: list[AgentChatUserAccessUpdateItem] = Field(default_factory=list)
 
 
 class SyncTaskOut(BaseModel):

@@ -36,6 +36,7 @@ export type AgentChatUserEntry = {
 export type AgentChatUserGroupView = {
   id: string
   name: string
+  authorized_count: number
   users: AgentChatUserEntry[]
 }
 
@@ -44,6 +45,18 @@ export type AgentChatUserView = {
   groups: AgentChatUserGroupView[]
   total_users: number
   last_synced_at?: string | null
+  manageable: boolean
+  sync_supported: boolean
+}
+
+export type AgentChatUserAccessUpdateItem = {
+  chat_user_id: string
+  is_auth: boolean
+}
+
+export type AgentChatUserAccessUpdateRequest = {
+  group_id: string
+  users: AgentChatUserAccessUpdateItem[]
 }
 
 export type AgentCreate = {
@@ -82,6 +95,8 @@ export const fetchAgents = (options?: { includeDescription?: boolean }) => {
 }
 export const fetchAgent = (id: string) => apiGet<AgentDetail>(`/agents/${id}`)
 export const fetchAgentChatUsers = (id: string) => apiGet<AgentChatUserView>(`/agents/${id}/chat-users`)
+export const updateAgentChatUsers = (id: string, payload: AgentChatUserAccessUpdateRequest) =>
+  apiPut<AgentChatUserView>(`/admin/agents/${id}/chat-users`, payload)
 
 export const createAgent = (payload: AgentCreate) => apiPost<AgentDetail>('/admin/agents', payload)
 export const updateAgent = (id: string, payload: AgentUpdate) =>

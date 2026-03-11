@@ -45,6 +45,13 @@
   gap: 12px;
 }
 
+.chat-user-group-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .chat-user-group-head > div {
   display: grid;
   gap: 2px;
@@ -81,4 +88,27 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.chat-user-auth-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #3d5158;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.chat-user-auth-control input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.ghost.small {
+  min-width: 88px;
+  min-height: 34px;
+  padding: 6px 12px;
+  font-size: 13px;
 }

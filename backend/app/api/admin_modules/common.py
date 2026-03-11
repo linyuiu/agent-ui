@@ -317,15 +317,32 @@ def fit2cloud_fetch(base_url: str, token: str, path: str) -> dict:
     raise HTTPException(status_code=400, detail=f"Upstream error: {data}")
 
 
-async def fit2cloud_fetch_async(base_url: str, token: str, path: str) -> dict:
-    headers = {"accept": "application/json", "Authorization": fit2cloud_auth_header(token)}
+async def fit2cloud_request_async(
+    base_url: str,
+    token: str,
+    path: str,
+    *,
+    method: str = "GET",
+    json_body: object | None = None,
+    accept: str = "application/json",
+) -> dict:
+    headers = {"accept": accept, "Authorization": fit2cloud_auth_header(token)}
     client = get_shared_async_client()
-    resp = await client.get(f"{base_url}{path}", headers=headers)
+    resp = await client.request(
+        method.upper(),
+        f"{base_url}{path}",
+        headers=headers,
+        json=json_body,
+    )
     resp.raise_for_status()
     data = resp.json()
     if isinstance(data, dict) and data.get("code") == 200:
         return data
     raise HTTPException(status_code=400, detail=f"Upstream error: {data}")
+
+
+async def fit2cloud_fetch_async(base_url: str, token: str, path: str) -> dict:
+    return await fit2cloud_request_async(base_url, token, path)
 
 
 def new_proxy_id() -> str:

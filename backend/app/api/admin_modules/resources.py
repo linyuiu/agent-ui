@@ -13,6 +13,7 @@ from ... import models, schemas
 from ...auth import get_current_user
 from ...db import get_db
 from ...permissions import (
+    evaluate_permission_async,
     has_permission,
     has_permission_async,
     is_super_admin,
@@ -20,6 +21,7 @@ from ...permissions import (
     require_menu_action_async,
 )
 from ...services.chat_user_sync import create_agent_chat_user_sync_task, sync_task_out
+from ...services.chat_user_sync import update_agent_chat_user_accesses
 from ...services.serializers import agent_detail, model_detail
 from ...tasks import enqueue_agent_chat_user_sync
 from .common import (
@@ -548,6 +550,51 @@ async def sync_agent_chat_users(
         task.message = str(exc)
         await db.commit()
     return sync_task_out(task)
+
+
+@router.put("/agents/{agent_id}/chat-users", response_model=schemas.AgentChatUserView)
+async def update_agent_chat_users(
+    agent_id: str,
+    payload: schemas.AgentChatUserAccessUpdateRequest,
+    current_user: models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> schemas.AgentChatUserView:
+    await require_menu_action_async(db, current_user, action="edit", menu_id="agents")
+
+    agent = (await db.execute(select(models.Agent).where(models.Agent.id == agent_id))).scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if not agent.is_synced:
+        raise HTTPException(status_code=400, detail="仅同步创建的智能体支持授权对话用户")
+    if not agent.sync_config_id:
+        raise HTTPException(status_code=400, detail="智能体缺少同步配置")
+
+    agent_groups = list(agent.groups or [])
+    if not agent_groups and agent.group_name:
+        agent_groups = [agent.group_name]
+    decision = await evaluate_permission_async(
+        db,
+        current_user,
+        action="manage",
+        scope="resource",
+        resource_type="agent",
+        resource_id=agent_id,
+        resource_attrs={"groups": agent_groups},
+    )
+    if not decision.allowed:
+        raise HTTPException(status_code=403, detail="访问需要权限")
+
+    config = await db.get(models.AgentApiConfig, int(agent.sync_config_id))
+    if not config:
+        raise HTTPException(status_code=400, detail="未找到同步配置")
+
+    return await update_agent_chat_user_accesses(
+        db,
+        agent=agent,
+        config=config,
+        group_id=payload.group_id,
+        updates=payload.users,
+    )
 
 
 @router.post("/agents/import", response_model=schemas.AgentImportResponse)

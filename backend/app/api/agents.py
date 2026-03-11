@@ -48,6 +48,26 @@ async def _can_view_agent_async(db: AsyncSession, user: models.User, agent: mode
     return False
 
 
+async def _can_manage_agent_chat_users_async(
+    db: AsyncSession,
+    user: models.User,
+    agent: models.Agent,
+) -> bool:
+    if is_super_admin(user):
+        return True
+    groups = _resolve_agent_groups(agent)
+    permission = await evaluate_permission_async(
+        db,
+        user,
+        action="manage",
+        scope="resource",
+        resource_type="agent",
+        resource_id=str(agent.id),
+        resource_attrs={"groups": groups},
+    )
+    return permission.allowed
+
+
 @router.get("", response_model=list[schemas.AgentSummary])
 async def list_agents(
     include_description: bool = True,
@@ -103,5 +123,15 @@ async def get_agent_chat_users(
     current_user: models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> schemas.AgentChatUserView:
-    await get_agent(agent_id=agent_id, current_user=current_user, db=db)
-    return await build_agent_chat_user_view(db, agent_id=agent_id)
+    agent = (await db.execute(select(models.Agent).where(models.Agent.id == agent_id))).scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if not await _can_view_agent_async(db, current_user, agent):
+        raise HTTPException(status_code=403, detail="访问需要权限")
+    manageable = await _can_manage_agent_chat_users_async(db, current_user, agent)
+    return await build_agent_chat_user_view(
+        db,
+        agent_id=agent_id,
+        manageable=manageable,
+        sync_supported=bool(agent.is_synced and agent.sync_config_id and agent.external_id),
+    )

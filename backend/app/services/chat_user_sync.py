@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .. import models, schemas
 from ..db import AsyncSessionLocal
 from ..services.serializers import agent_detail
-from ..api.admin_modules.common import fit2cloud_fetch_async
+from ..api.admin_modules.common import fit2cloud_fetch_async, fit2cloud_request_async
 
 _PAGE_SIZE = 100
 
@@ -138,6 +138,59 @@ async def fetch_agent_group_chat_users(
     raise HTTPException(status_code=400, detail="; ".join(errors) or "Failed to fetch agent chat users")
 
 
+def _workspace_candidates_for_agent(agent: models.Agent) -> list[str]:
+    source_payload = dict(agent.source_payload or {})
+    workspace_info = source_payload.get("workspace") if isinstance(source_payload.get("workspace"), dict) else {}
+    candidates = [
+        str(workspace_info.get("slug") or "").strip(),
+        str(workspace_info.get("path") or "").strip(),
+        str(workspace_info.get("id") or "").strip(),
+        str(agent.workspace_id or "").strip(),
+        "default",
+    ]
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        ordered.append(candidate)
+    return ordered
+
+
+async def push_agent_group_chat_user_accesses(
+    *,
+    base_url: str,
+    token: str,
+    agent: models.Agent,
+    group_id: str,
+    payload: list[dict[str, Any]],
+) -> str:
+    application_id = str(agent.external_id or "").strip()
+    if not application_id:
+        raise HTTPException(status_code=400, detail="Agent external application id is missing")
+
+    errors: list[str] = []
+    for workspace_key in _workspace_candidates_for_agent(agent):
+        try:
+            await fit2cloud_request_async(
+                base_url,
+                token,
+                (
+                    f"/admin/api/workspace/{workspace_key}/APPLICATION/{application_id}"
+                    f"/user_group_id/{group_id}"
+                ),
+                method="PUT",
+                json_body=payload,
+            )
+            return workspace_key
+        except HTTPException as exc:
+            errors.append(f"{workspace_key}: {exc.detail}")
+        except Exception as exc:  # pragma: no cover - defensive branch
+            errors.append(f"{workspace_key}: {exc}")
+    raise HTTPException(status_code=400, detail="; ".join(errors) or "Failed to update agent chat users")
+
+
 async def sync_chat_user_catalog(
     db: AsyncSession,
     *,
@@ -252,14 +305,7 @@ async def sync_agent_chat_user_accesses(
     if not application_id:
         raise HTTPException(status_code=400, detail="Agent external application id is missing")
 
-    source_payload = dict(agent.source_payload or {})
-    workspace_info = source_payload.get("workspace") if isinstance(source_payload.get("workspace"), dict) else {}
-    workspace_candidates = [
-        str(workspace_info.get("slug") or "").strip(),
-        str(workspace_info.get("path") or "").strip(),
-        str(agent.workspace_id or "").strip(),
-        "default",
-    ]
+    workspace_candidates = _workspace_candidates_for_agent(agent)
 
     await db.execute(delete(models.AgentChatUserAccess).where(models.AgentChatUserAccess.agent_id == agent.id))
 
@@ -402,6 +448,8 @@ async def build_agent_chat_user_view(
     db: AsyncSession,
     *,
     agent_id: str,
+    manageable: bool = False,
+    sync_supported: bool = False,
 ) -> schemas.AgentChatUserView:
     groups = (
         await db.execute(
@@ -449,20 +497,94 @@ async def build_agent_chat_user_view(
             )
         )
 
-    group_views = [
-        schemas.AgentChatUserGroupView(
-            id=group_id,
-            name=group_name or group_id,
-            users=grouped.get(group_id, []),
+    group_views = []
+    for group_id, group_name in groups:
+        users = grouped.get(group_id, [])
+        group_views.append(
+            schemas.AgentChatUserGroupView(
+                id=group_id,
+                name=group_name or group_id,
+                authorized_count=sum(1 for user in users if user.is_auth),
+                users=users,
+            )
         )
-        for group_id, group_name in groups
-    ]
     total_users = sum(len(group.users) for group in group_views)
     return schemas.AgentChatUserView(
         agent_id=agent_id,
         groups=group_views,
         total_users=total_users,
         last_synced_at=latest_synced_at,
+        manageable=manageable,
+        sync_supported=sync_supported,
+    )
+
+
+async def update_agent_chat_user_accesses(
+    db: AsyncSession,
+    *,
+    agent: models.Agent,
+    config: models.AgentApiConfig,
+    group_id: str,
+    updates: list[schemas.AgentChatUserAccessUpdateItem],
+) -> schemas.AgentChatUserView:
+    if not agent.is_synced:
+        raise HTTPException(status_code=400, detail="仅同步创建的智能体支持授权对话用户")
+    if not agent.external_id:
+        raise HTTPException(status_code=400, detail="智能体缺少外部应用标识")
+
+    access_rows = (
+        await db.execute(
+            select(models.AgentChatUserAccess)
+            .where(
+                models.AgentChatUserAccess.agent_id == agent.id,
+                models.AgentChatUserAccess.group_id == group_id,
+            )
+            .order_by(models.AgentChatUserAccess.username.asc(), models.AgentChatUserAccess.chat_user_id.asc())
+        )
+    ).scalars().all()
+    if not access_rows:
+        raise HTTPException(status_code=404, detail="未找到该用户组的对话用户数据")
+
+    updates_by_id = {item.chat_user_id: bool(item.is_auth) for item in updates}
+    unknown_ids = sorted(set(updates_by_id) - {row.chat_user_id for row in access_rows})
+    if unknown_ids:
+        raise HTTPException(status_code=400, detail=f"存在无效的对话用户：{', '.join(unknown_ids[:5])}")
+
+    synced_at = _now()
+    for row in access_rows:
+        if row.chat_user_id in updates_by_id:
+            row.is_auth = updates_by_id[row.chat_user_id]
+        payload = dict(row.raw_payload or {})
+        payload["is_auth"] = bool(row.is_auth)
+        row.raw_payload = payload
+        row.synced_at = synced_at
+
+    upstream_payload = [
+        {"chat_user_id": row.chat_user_id, "is_auth": bool(row.is_auth)}
+        for row in access_rows
+    ]
+
+    try:
+        await push_agent_group_chat_user_accesses(
+            base_url=config.base_url.rstrip("/"),
+            token=config.token,
+            agent=agent,
+            group_id=group_id,
+            payload=upstream_payload,
+        )
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception as exc:  # pragma: no cover - defensive branch
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=f"更新源系统失败：{exc}") from exc
+
+    await db.commit()
+    return await build_agent_chat_user_view(
+        db,
+        agent_id=agent.id,
+        manageable=True,
+        sync_supported=bool(agent.is_synced and agent.sync_config_id and agent.external_id),
     )
 
 
