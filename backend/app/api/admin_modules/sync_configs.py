@@ -11,7 +11,7 @@ from ... import models, schemas
 from ...auth import get_current_user
 from ...db import get_db
 from ...services.agent_sync import create_fit2cloud_agent_sync_task
-from ...services.chat_user_sync import sync_task_out
+from ...services.chat_user_sync import fetch_sync_tasks_out, sync_chat_user_catalog
 from ...tasks import enqueue_fit2cloud_agent_sync
 from .common import (
     fit2cloud_fetch_async,
@@ -241,6 +241,8 @@ async def sync_fit2cloud_agents_by_config(
     updated_total = 0
     all_errors: list[str] = []
     created_tasks: list[models.SyncTask] = []
+    created_task_ids: list[str] = []
+    sync_targets: list[tuple[str, str, str, str]] = []
 
     for workspace_item in normalized_workspaces:
         workspace_id = workspace_item.workspace_id
@@ -284,17 +286,41 @@ async def sync_fit2cloud_agents_by_config(
             application_id = str(app.get("id") or "").strip()
             if not application_id:
                 continue
-            task = await create_fit2cloud_agent_sync_task(
-                db,
-                current_user=current_user,
-                config_id=config.id,
-                workspace_id=str(workspace_id),
-                workspace_name=str(workspace_name),
-                application_id=application_id,
-                application_name=str(app.get("name") or application_id),
-                sync_chat_users=bool(payload.sync_chat_users),
+            sync_targets.append(
+                (
+                    str(workspace_id),
+                    str(workspace_name),
+                    application_id,
+                    str(app.get("name") or application_id),
+                )
             )
-            created_tasks.append(task)
+
+    if payload.sync_chat_users and sync_targets:
+        try:
+            await sync_chat_user_catalog(
+                db,
+                base_url=base_url,
+                token=config.token,
+            )
+            await db.commit()
+        except Exception as exc:
+            await db.rollback()
+            raise HTTPException(status_code=400, detail="Failed to sync source chat-user catalog") from exc
+
+    for workspace_id, workspace_name, application_id, application_name in sync_targets:
+        task = await create_fit2cloud_agent_sync_task(
+            db,
+            current_user=current_user,
+            config_id=config.id,
+            workspace_id=workspace_id,
+            workspace_name=workspace_name,
+            application_id=application_id,
+            application_name=application_name,
+            sync_chat_users=bool(payload.sync_chat_users),
+            shared_chat_catalog=bool(payload.sync_chat_users),
+        )
+        created_tasks.append(task)
+        created_task_ids.append(task.id)
 
     await db.commit()
     for task in created_tasks:
@@ -305,10 +331,11 @@ async def sync_fit2cloud_agents_by_config(
             all_errors.append(f"task {task.id}: {exc}")
     if created_tasks:
         await db.commit()
+    refreshed_tasks = await fetch_sync_tasks_out(db, task_ids=created_task_ids)
     return schemas.AgentSyncResponse(
         imported=0,
         updated=0,
-        total=len(created_tasks),
+        total=len(created_task_ids),
         errors=all_errors,
-        tasks=[sync_task_out(task) for task in created_tasks],
+        tasks=refreshed_tasks,
     )

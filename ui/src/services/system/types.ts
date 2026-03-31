@@ -205,6 +205,51 @@ export type AgentApiConfigUpdate = {
   token?: string
 }
 
+export type ChatUserCatalogItem = {
+  id: string
+  username: string
+  email: string
+  phone: string
+  is_active: boolean
+  nick_name: string
+  source: string
+  create_time: string
+  update_time: string
+  user_group_ids: string[]
+  user_group_names: string[]
+  synced_at?: string | null
+  is_bound: boolean
+  system_user_id?: number | null
+  system_username: string
+  system_account: string
+  accessible_agent_count: number
+}
+
+export type ChatUserCatalogResponse = {
+  items: ChatUserCatalogItem[]
+  total: number
+  page: number
+  page_size: number
+  sources: string[]
+}
+
+export type ChatUserAccessibleAgentItem = {
+  agent_id: string
+  agent_name: string
+  agent_status: string
+  agent_owner: string
+  workspace_name: string
+  source_type: string
+  group_ids: string[]
+  group_names: string[]
+  last_run: string
+}
+
+export type ChatUserAccessibleAgentsResponse = {
+  chat_user: ChatUserCatalogItem
+  items: ChatUserAccessibleAgentItem[]
+}
+
 export type Fit2CloudWorkspace = {
   id: string
   name: string

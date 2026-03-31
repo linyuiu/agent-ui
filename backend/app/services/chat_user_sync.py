@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
 
 from fastapi import HTTPException
-from sqlalchemy import delete, or_, select
+from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import models, schemas
@@ -14,33 +14,101 @@ from ..services.serializers import agent_detail
 from ..api.admin_modules.common import fit2cloud_fetch_async, fit2cloud_request_async
 
 _PAGE_SIZE = 100
+_GROUP_FETCH_CONCURRENCY = 6
+_SYNC_TASK_FIELDS = (
+    "id",
+    "task_type",
+    "status",
+    "config_id",
+    "agent_id",
+    "agent_name",
+    "workspace_id",
+    "workspace_name",
+    "external_id",
+    "total_steps",
+    "completed_steps",
+    "total_records",
+    "processed_records",
+    "message",
+    "error",
+    "payload",
+    "created_by",
+    "celery_task_id",
+    "created_at",
+    "updated_at",
+    "started_at",
+    "finished_at",
+)
 
 
-def sync_task_out(task: models.SyncTask) -> schemas.SyncTaskOut:
+def _sync_task_value(source: Mapping[str, Any], field: str, default: Any = None) -> Any:
+    value = source.get(field, default)
+    if field == "payload":
+        return dict(value or {})
+    return value
+
+
+def sync_task_out(task: Mapping[str, Any]) -> schemas.SyncTaskOut:
     return schemas.SyncTaskOut(
-        id=task.id,
-        task_type=task.task_type,
-        status=task.status,
-        config_id=task.config_id,
-        agent_id=task.agent_id,
-        agent_name=task.agent_name,
-        workspace_id=task.workspace_id,
-        workspace_name=task.workspace_name,
-        external_id=task.external_id,
-        total_steps=task.total_steps,
-        completed_steps=task.completed_steps,
-        total_records=task.total_records,
-        processed_records=task.processed_records,
-        message=task.message,
-        error=task.error,
-        payload=dict(task.payload or {}),
-        created_by=task.created_by,
-        celery_task_id=task.celery_task_id,
-        created_at=task.created_at,
-        updated_at=task.updated_at,
-        started_at=task.started_at,
-        finished_at=task.finished_at,
+        id=_sync_task_value(task, "id", ""),
+        task_type=_sync_task_value(task, "task_type", ""),
+        status=_sync_task_value(task, "status", ""),
+        config_id=_sync_task_value(task, "config_id"),
+        agent_id=_sync_task_value(task, "agent_id"),
+        agent_name=_sync_task_value(task, "agent_name", ""),
+        workspace_id=_sync_task_value(task, "workspace_id", ""),
+        workspace_name=_sync_task_value(task, "workspace_name", ""),
+        external_id=_sync_task_value(task, "external_id", ""),
+        total_steps=_sync_task_value(task, "total_steps", 0),
+        completed_steps=_sync_task_value(task, "completed_steps", 0),
+        total_records=_sync_task_value(task, "total_records", 0),
+        processed_records=_sync_task_value(task, "processed_records", 0),
+        message=_sync_task_value(task, "message", ""),
+        error=_sync_task_value(task, "error", ""),
+        payload=_sync_task_value(task, "payload", {}),
+        created_by=_sync_task_value(task, "created_by"),
+        celery_task_id=_sync_task_value(task, "celery_task_id", ""),
+        created_at=_sync_task_value(task, "created_at"),
+        updated_at=_sync_task_value(task, "updated_at"),
+        started_at=_sync_task_value(task, "started_at"),
+        finished_at=_sync_task_value(task, "finished_at"),
     )
+
+
+def _sync_task_select():
+    return select(*(getattr(models.SyncTask, field).label(field) for field in _SYNC_TASK_FIELDS))
+
+
+async def fetch_sync_task_out(db: AsyncSession, task_id: str) -> schemas.SyncTaskOut:
+    row = (
+        await db.execute(
+            _sync_task_select().where(models.SyncTask.id == task_id)
+        )
+    ).mappings().one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Sync task not found")
+    return sync_task_out(row)
+
+
+async def fetch_sync_tasks_out(
+    db: AsyncSession,
+    *,
+    task_ids: list[str] | None = None,
+    limit: int = 100,
+) -> list[schemas.SyncTaskOut]:
+    stmt = _sync_task_select()
+    if task_ids is not None:
+        if not task_ids:
+            return []
+        stmt = stmt.where(models.SyncTask.id.in_(task_ids))
+    else:
+        stmt = stmt.order_by(models.SyncTask.created_at.desc()).limit(limit)
+
+    rows = (await db.execute(stmt)).mappings().all()
+    if task_ids is not None:
+        task_map = {str(row["id"]): row for row in rows}
+        return [sync_task_out(task_map[task_id]) for task_id in task_ids if task_id in task_map]
+    return [sync_task_out(row) for row in rows]
 
 
 def _now() -> datetime:
@@ -293,6 +361,18 @@ async def sync_chat_user_catalog(
     return list(existing_groups.values()), list(existing_users.values())
 
 
+async def load_synced_chat_user_groups(db: AsyncSession) -> list[models.ChatUserGroup]:
+    return (
+        await db.execute(
+            select(models.ChatUserGroup).order_by(models.ChatUserGroup.name.asc(), models.ChatUserGroup.id.asc())
+        )
+    ).scalars().all()
+
+
+async def count_synced_chat_users(db: AsyncSession) -> int:
+    return int((await db.scalar(select(func.count(models.ChatUser.id)))) or 0)
+
+
 async def sync_agent_chat_user_accesses(
     db: AsyncSession,
     *,
@@ -308,48 +388,95 @@ async def sync_agent_chat_user_accesses(
     workspace_candidates = _workspace_candidates_for_agent(agent)
 
     await db.execute(delete(models.AgentChatUserAccess).where(models.AgentChatUserAccess.agent_id == agent.id))
+    await db.execute(delete(models.AgentChatUserGroup).where(models.AgentChatUserGroup.agent_id == agent.id))
 
     total_records = 0
     errors: list[str] = []
     synced_at = _now()
 
-    for group in groups:
-        if not group.id:
-            continue
-        try:
-            _, records = await fetch_agent_group_chat_users(
-                base_url,
-                token,
-                workspace_candidates=workspace_candidates,
-                application_id=application_id,
-                group_id=group.id,
+    valid_groups = [group for group in groups if group.id]
+    semaphore = asyncio.Semaphore(_GROUP_FETCH_CONCURRENCY)
+
+    async def fetch_group_records(group: models.ChatUserGroup) -> tuple[models.ChatUserGroup, list[dict[str, Any]], str | None]:
+        async with semaphore:
+            try:
+                _, records = await fetch_agent_group_chat_users(
+                    base_url,
+                    token,
+                    workspace_candidates=workspace_candidates,
+                    application_id=application_id,
+                    group_id=group.id,
+                )
+                return group, records, None
+            except HTTPException as exc:
+                return group, [], str(exc.detail)
+            except Exception as exc:  # pragma: no cover - defensive branch
+                return group, [], str(exc)
+
+    fetch_results = await asyncio.gather(*(fetch_group_records(group) for group in valid_groups))
+    all_chat_user_ids = {
+        str(payload.get("id") or "").strip()
+        for _, records, error in fetch_results
+        if not error
+        for payload in records
+        if str(payload.get("id") or "").strip()
+    }
+    chat_user_map = {
+        item.id: item
+        for item in (
+            await db.execute(
+                select(models.ChatUser).where(models.ChatUser.id.in_(all_chat_user_ids or [""]))
             )
-        except HTTPException as exc:
-            errors.append(f"{group.name or group.id}: {exc.detail}")
+        ).scalars().all()
+    }
+
+    for group, records, error in fetch_results:
+        if error:
+            errors.append(f"{group.name or group.id}: {error}")
             continue
 
+        authorized_count = 0
+        group_total_users = 0
         for payload in records:
             chat_user_id = str(payload.get("id") or "").strip()
             if not chat_user_id:
                 continue
+            group_total_users += 1
+            chat_user = chat_user_map.get(chat_user_id)
+            is_auth = bool(payload.get("is_auth"))
+            if is_auth:
+                authorized_count += 1
             db.add(
                 models.AgentChatUserAccess(
                     agent_id=agent.id,
                     chat_user_id=chat_user_id,
                     group_id=group.id,
                     group_name=group.name,
-                    username=str(payload.get("username") or "").strip(),
-                    nick_name=str(payload.get("nick_name") or "").strip(),
-                    is_active=bool(payload.get("is_active")),
-                    source=str(payload.get("source") or "").strip(),
-                    create_time=str(payload.get("create_time") or "").strip(),
-                    update_time=str(payload.get("update_time") or "").strip(),
-                    is_auth=bool(payload.get("is_auth")),
+                    username=str((chat_user.username if chat_user else payload.get("username")) or "").strip(),
+                    email=str((chat_user.email if chat_user else "") or "").strip(),
+                    phone=str((chat_user.phone if chat_user else "") or "").strip(),
+                    nick_name=str((chat_user.nick_name if chat_user else payload.get("nick_name")) or "").strip(),
+                    is_active=bool(chat_user.is_active if chat_user else payload.get("is_active")),
+                    source=str((chat_user.source if chat_user else payload.get("source")) or "").strip(),
+                    create_time=str((chat_user.create_time if chat_user else payload.get("create_time")) or "").strip(),
+                    update_time=str((chat_user.update_time if chat_user else payload.get("update_time")) or "").strip(),
+                    is_auth=is_auth,
                     raw_payload=dict(payload),
                     synced_at=synced_at,
                 )
             )
             total_records += 1
+
+        db.add(
+            models.AgentChatUserGroup(
+                agent_id=agent.id,
+                group_id=group.id,
+                group_name=group.name,
+                authorized_count=authorized_count,
+                total_users=group_total_users,
+                synced_at=synced_at,
+            )
+        )
 
     await db.flush()
     return total_records, errors
@@ -361,6 +488,7 @@ async def create_agent_chat_user_sync_task(
     current_user: models.User,
     agent: models.Agent,
     config_id: int,
+    skip_catalog_sync: bool = False,
 ) -> models.SyncTask:
     task = models.SyncTask(
         task_type="agent_chat_user_sync",
@@ -373,6 +501,7 @@ async def create_agent_chat_user_sync_task(
         external_id=str(agent.external_id or ""),
         created_by=current_user.id,
         message="等待同步",
+        payload={"skip_catalog_sync": bool(skip_catalog_sync)},
     )
     db.add(task)
     await db.flush()
@@ -403,6 +532,8 @@ async def run_agent_chat_user_sync_task(task_id: str) -> None:
             await _mark_task_failed(db, task, "仅同步创建的智能体支持同步对话用户")
             return
 
+        skip_catalog_sync = bool((task.payload or {}).get("skip_catalog_sync"))
+
         task.status = "running"
         task.started_at = _now()
         task.updated_at = _now()
@@ -411,16 +542,25 @@ async def run_agent_chat_user_sync_task(task_id: str) -> None:
         await db.commit()
 
         try:
-            groups, users = await sync_chat_user_catalog(
-                db,
-                base_url=config.base_url.rstrip("/"),
-                token=config.token,
-            )
-            task.total_steps = max(2 + len(groups), 2)
-            task.completed_steps = 2
-            task.total_records = len(users)
-            task.processed_records = len(users)
-            task.message = "正在同步智能体对话用户"
+            if skip_catalog_sync:
+                groups = await load_synced_chat_user_groups(db)
+                user_count = await count_synced_chat_users(db)
+                task.total_steps = max(1 + len(groups), 1)
+                task.completed_steps = 1
+                task.total_records = user_count
+                task.processed_records = user_count
+                task.message = "正在同步智能体对话用户"
+            else:
+                groups, users = await sync_chat_user_catalog(
+                    db,
+                    base_url=config.base_url.rstrip("/"),
+                    token=config.token,
+                )
+                task.total_steps = max(2 + len(groups), 2)
+                task.completed_steps = 2
+                task.total_records = len(users)
+                task.processed_records = len(users)
+                task.message = "正在同步智能体对话用户"
             task.updated_at = _now()
             await db.commit()
 
@@ -451,64 +591,66 @@ async def build_agent_chat_user_view(
     manageable: bool = False,
     sync_supported: bool = False,
 ) -> schemas.AgentChatUserView:
-    groups = (
+    group_rows = (
         await db.execute(
-            select(models.AgentChatUserAccess.group_id, models.AgentChatUserAccess.group_name)
-            .where(models.AgentChatUserAccess.agent_id == agent_id)
-            .distinct()
-            .order_by(models.AgentChatUserAccess.group_name.asc(), models.AgentChatUserAccess.group_id.asc())
-        )
-    ).all()
-
-    access_rows = (
-        await db.execute(
-            select(models.AgentChatUserAccess, models.ChatUser)
-            .outerjoin(models.ChatUser, models.ChatUser.id == models.AgentChatUserAccess.chat_user_id)
-            .where(models.AgentChatUserAccess.agent_id == agent_id)
+            select(
+                models.AgentChatUserGroup.group_id.label("group_id"),
+                models.AgentChatUserGroup.group_name.label("group_name"),
+                models.AgentChatUserGroup.total_users.label("total_users"),
+                models.AgentChatUserGroup.authorized_count.label("authorized_count"),
+            )
+            .where(models.AgentChatUserGroup.agent_id == agent_id)
             .order_by(
-                models.AgentChatUserAccess.group_name.asc(),
-                models.AgentChatUserAccess.nick_name.asc(),
-                models.AgentChatUserAccess.username.asc(),
+                models.AgentChatUserGroup.group_name.asc(),
+                models.AgentChatUserGroup.group_id.asc(),
             )
         )
-    ).all()
+    ).mappings().all()
+    if not group_rows:
+        group_rows = (
+            await db.execute(
+                select(
+                    models.AgentChatUserAccess.group_id.label("group_id"),
+                    func.max(models.AgentChatUserAccess.group_name).label("group_name"),
+                    func.count(models.AgentChatUserAccess.chat_user_id).label("total_users"),
+                    func.sum(
+                        case(
+                            (models.AgentChatUserAccess.is_auth.is_(True), 1),
+                            else_=0,
+                        )
+                    ).label("authorized_count"),
+                )
+                .where(models.AgentChatUserAccess.agent_id == agent_id)
+                .group_by(models.AgentChatUserAccess.group_id)
+                .order_by(
+                    func.max(models.AgentChatUserAccess.group_name).asc(),
+                    models.AgentChatUserAccess.group_id.asc(),
+                )
+            )
+        ).mappings().all()
+    latest_synced_at = await db.scalar(
+        select(func.max(models.AgentChatUserGroup.synced_at)).where(
+            models.AgentChatUserGroup.agent_id == agent_id
+        )
+    )
+    if latest_synced_at is None:
+        latest_synced_at = await db.scalar(
+            select(func.max(models.AgentChatUserAccess.synced_at)).where(
+                models.AgentChatUserAccess.agent_id == agent_id
+            )
+        )
 
-    grouped: dict[str, list[schemas.AgentChatUserEntry]] = {}
-    latest_synced_at = None
-    for access, chat_user in access_rows:
-        latest_synced_at = max(
-            [item for item in (latest_synced_at, access.synced_at) if item is not None],
-            default=latest_synced_at,
+    group_views = [
+        schemas.AgentChatUserGroupView(
+            id=str(row["group_id"] or ""),
+            name=str(row["group_name"] or row["group_id"] or ""),
+            authorized_count=int(row["authorized_count"] or 0),
+            total_users=int(row["total_users"] or 0),
+            users=[],
         )
-        grouped.setdefault(access.group_id, []).append(
-            schemas.AgentChatUserEntry(
-                id=access.chat_user_id,
-                username=chat_user.username if chat_user else access.username,
-                email=chat_user.email if chat_user else "",
-                phone=chat_user.phone if chat_user else "",
-                is_active=chat_user.is_active if chat_user else access.is_active,
-                nick_name=chat_user.nick_name if chat_user else access.nick_name,
-                source=chat_user.source if chat_user else access.source,
-                create_time=chat_user.create_time if chat_user else access.create_time,
-                update_time=chat_user.update_time if chat_user else access.update_time,
-                user_group_ids=list(chat_user.user_group_ids or []) if chat_user else [access.group_id],
-                user_group_names=list(chat_user.user_group_names or []) if chat_user else [access.group_name],
-                is_auth=bool(access.is_auth),
-            )
-        )
-
-    group_views = []
-    for group_id, group_name in groups:
-        users = grouped.get(group_id, [])
-        group_views.append(
-            schemas.AgentChatUserGroupView(
-                id=group_id,
-                name=group_name or group_id,
-                authorized_count=sum(1 for user in users if user.is_auth),
-                users=users,
-            )
-        )
-    total_users = sum(len(group.users) for group in group_views)
+        for row in group_rows
+    ]
+    total_users = sum(group.total_users for group in group_views)
     return schemas.AgentChatUserView(
         agent_id=agent_id,
         groups=group_views,
@@ -519,6 +661,103 @@ async def build_agent_chat_user_view(
     )
 
 
+async def build_agent_chat_user_group_view(
+    db: AsyncSession,
+    *,
+    agent_id: str,
+    group_id: str,
+) -> schemas.AgentChatUserGroupView:
+    summary_row = (
+        await db.execute(
+            select(
+                models.AgentChatUserGroup.group_id.label("group_id"),
+                models.AgentChatUserGroup.group_name.label("group_name"),
+                models.AgentChatUserGroup.total_users.label("total_users"),
+                models.AgentChatUserGroup.authorized_count.label("authorized_count"),
+            )
+            .where(
+                models.AgentChatUserGroup.agent_id == agent_id,
+                models.AgentChatUserGroup.group_id == group_id,
+            )
+        )
+    ).mappings().one_or_none()
+    if summary_row is None:
+        summary_row = (
+            await db.execute(
+                select(
+                    models.AgentChatUserAccess.group_id.label("group_id"),
+                    func.max(models.AgentChatUserAccess.group_name).label("group_name"),
+                    func.count(models.AgentChatUserAccess.chat_user_id).label("total_users"),
+                    func.sum(
+                        case(
+                            (models.AgentChatUserAccess.is_auth.is_(True), 1),
+                            else_=0,
+                        )
+                    ).label("authorized_count"),
+                )
+                .where(
+                    models.AgentChatUserAccess.agent_id == agent_id,
+                    models.AgentChatUserAccess.group_id == group_id,
+                )
+                .group_by(models.AgentChatUserAccess.group_id)
+            )
+        ).mappings().one_or_none()
+    if summary_row is None:
+        raise HTTPException(status_code=404, detail="未找到该用户组的对话用户数据")
+
+    user_rows = (
+        await db.execute(
+            select(
+                models.AgentChatUserAccess.chat_user_id.label("id"),
+                models.AgentChatUserAccess.username.label("username"),
+                models.AgentChatUserAccess.email.label("email"),
+                models.AgentChatUserAccess.phone.label("phone"),
+                models.AgentChatUserAccess.is_active.label("is_active"),
+                models.AgentChatUserAccess.nick_name.label("nick_name"),
+                models.AgentChatUserAccess.source.label("source"),
+                models.AgentChatUserAccess.create_time.label("create_time"),
+                models.AgentChatUserAccess.update_time.label("update_time"),
+                models.AgentChatUserAccess.is_auth.label("is_auth"),
+            )
+            .where(
+                models.AgentChatUserAccess.agent_id == agent_id,
+                models.AgentChatUserAccess.group_id == group_id,
+            )
+            .order_by(
+                models.AgentChatUserAccess.nick_name.asc(),
+                models.AgentChatUserAccess.username.asc(),
+                models.AgentChatUserAccess.chat_user_id.asc(),
+            )
+        )
+    ).mappings().all()
+
+    users = [
+        schemas.AgentChatUserEntry(
+            id=str(row["id"]),
+            username=str(row["username"] or ""),
+            email=str(row["email"] or ""),
+            phone=str(row["phone"] or ""),
+            is_active=bool(row["is_active"]),
+            nick_name=str(row["nick_name"] or ""),
+            source=str(row["source"] or ""),
+            create_time=str(row["create_time"] or ""),
+            update_time=str(row["update_time"] or ""),
+            user_group_ids=[str(summary_row["group_id"] or "")],
+            user_group_names=[str(summary_row["group_name"] or summary_row["group_id"] or "")],
+            is_auth=bool(row["is_auth"]),
+        )
+        for row in user_rows
+    ]
+
+    return schemas.AgentChatUserGroupView(
+        id=str(summary_row["group_id"] or ""),
+        name=str(summary_row["group_name"] or summary_row["group_id"] or ""),
+        authorized_count=int(summary_row["authorized_count"] or 0),
+        total_users=int(summary_row["total_users"] or 0),
+        users=users,
+    )
+
+
 async def update_agent_chat_user_accesses(
     db: AsyncSession,
     *,
@@ -526,7 +765,7 @@ async def update_agent_chat_user_accesses(
     config: models.AgentApiConfig,
     group_id: str,
     updates: list[schemas.AgentChatUserAccessUpdateItem],
-) -> schemas.AgentChatUserView:
+) -> schemas.AgentChatUserGroupView:
     if not agent.is_synced:
         raise HTTPException(status_code=400, detail="仅同步创建的智能体支持授权对话用户")
     if not agent.external_id:
@@ -580,12 +819,7 @@ async def update_agent_chat_user_accesses(
         raise HTTPException(status_code=400, detail=f"更新源系统失败：{exc}") from exc
 
     await db.commit()
-    return await build_agent_chat_user_view(
-        db,
-        agent_id=agent.id,
-        manageable=True,
-        sync_supported=bool(agent.is_synced and agent.sync_config_id and agent.external_id),
-    )
+    return await build_agent_chat_user_group_view(db, agent_id=agent.id, group_id=group_id)
 
 
 async def find_chat_user_by_identity(

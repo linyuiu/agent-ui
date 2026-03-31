@@ -1,6 +1,7 @@
 <template>
   <div class="admin-view">
     <UserRoleModule v-if="currentSystemAdminTab === 'user-role'" />
+    <ChatUserCatalogModule v-else-if="currentSystemAdminTab === 'chat-users'" />
     <PermissionModule v-else-if="currentSystemAdminTab === 'permissions'" />
     <SystemSettingsModule v-else-if="currentSystemAdminTab === 'system-settings'" />
     <AuthSettingsModule v-else-if="currentSystemAdminTab === 'auth-settings'" />
@@ -14,6 +15,7 @@ import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import AgentSyncModule from './components/AgentSyncModule.vue'
 import AuthSettingsModule from './components/AuthSettingsModule.vue'
+import ChatUserCatalogModule from './components/ChatUserCatalogModule.vue'
 import PermissionModule from './components/PermissionModule.vue'
 import SyncTaskProgressModule from './components/SyncTaskProgressModule.vue'
 import SystemSettingsModule from './components/SystemSettingsModule.vue'
@@ -21,6 +23,7 @@ import UserRoleModule from './components/UserRoleModule.vue'
 
 type SystemAdminTab =
   | 'user-role'
+  | 'chat-users'
   | 'permissions'
   | 'system-settings'
   | 'auth-settings'
@@ -31,6 +34,7 @@ const route = useRoute()
 
 const normalizeSystemAdminTab = (value: unknown): SystemAdminTab => {
   const text = String(value || '')
+  if (text === 'chat-users') return 'chat-users'
   if (text === 'permissions') return 'permissions'
   if (text === 'system-settings') return 'system-settings'
   if (text === 'auth-settings') return 'auth-settings'

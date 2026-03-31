@@ -307,6 +307,40 @@ class ChatUserSummary(BaseModel):
     user_group_names: list[str] = Field(default_factory=list)
 
 
+class ChatUserCatalogItem(ChatUserSummary):
+    synced_at: datetime | None = None
+    is_bound: bool = False
+    system_user_id: int | None = None
+    system_username: str = ""
+    system_account: str = ""
+    accessible_agent_count: int = 0
+
+
+class ChatUserCatalogResponse(BaseModel):
+    items: list[ChatUserCatalogItem] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 20
+    sources: list[str] = Field(default_factory=list)
+
+
+class ChatUserAccessibleAgentItem(BaseModel):
+    agent_id: str
+    agent_name: str
+    agent_status: str = ""
+    agent_owner: str = ""
+    workspace_name: str = ""
+    source_type: str = ""
+    group_ids: list[str] = Field(default_factory=list)
+    group_names: list[str] = Field(default_factory=list)
+    last_run: str = ""
+
+
+class ChatUserAccessibleAgentsResponse(BaseModel):
+    chat_user: ChatUserCatalogItem
+    items: list[ChatUserAccessibleAgentItem] = Field(default_factory=list)
+
+
 class ChatUserGroupSummary(BaseModel):
     id: str
     name: str
@@ -331,6 +365,7 @@ class AgentChatUserGroupView(BaseModel):
     id: str
     name: str
     authorized_count: int = 0
+    total_users: int = 0
     users: list[AgentChatUserEntry] = Field(default_factory=list)
 
 
@@ -405,6 +440,12 @@ class AgentSummary(BaseModel):
 
 class AgentDetail(AgentSummary):
     pass
+
+
+class AgentDetailPage(BaseModel):
+    agent: AgentDetail
+    chat_users: AgentChatUserView
+    initial_group: AgentChatUserGroupView | None = None
 
 
 class Fit2CloudSyncRequest(BaseModel):

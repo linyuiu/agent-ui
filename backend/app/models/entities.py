@@ -241,6 +241,28 @@ class ChatUserGroupMember(Base):
     )
 
 
+class AgentChatUserGroup(Base):
+    __tablename__ = "agent_chat_user_groups"
+
+    id = Column(Integer, primary_key=True, index=True)
+    agent_id = Column(String(64), nullable=False, index=True)
+    group_id = Column(String(255), nullable=False, index=True)
+    group_name = Column(String(255), nullable=False, default="")
+    authorized_count = Column(Integer, nullable=False, default=0)
+    total_users = Column(Integer, nullable=False, default=0)
+    synced_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("agent_id", "group_id", name="uq_agent_chat_user_group"),
+        Index("ix_agent_chat_user_groups_agent_sort", "agent_id", "group_name", "group_id"),
+    )
+
+
 class AgentChatUserAccess(Base):
     __tablename__ = "agent_chat_user_accesses"
 
@@ -250,6 +272,8 @@ class AgentChatUserAccess(Base):
     group_id = Column(String(255), nullable=False, index=True)
     group_name = Column(String(255), nullable=False, default="")
     username = Column(String(255), nullable=False, default="")
+    email = Column(String(255), nullable=False, default="")
+    phone = Column(String(255), nullable=False, default="")
     nick_name = Column(String(255), nullable=False, default="")
     is_active = Column(Boolean, nullable=False, default=True)
     source = Column(String(64), nullable=False, default="", index=True)
@@ -267,6 +291,14 @@ class AgentChatUserAccess(Base):
     __table_args__ = (
         UniqueConstraint("agent_id", "group_id", "chat_user_id", name="uq_agent_chat_user_access"),
         Index("ix_agent_chat_user_access_agent_auth", "agent_id", "is_auth"),
+        Index("ix_agent_chat_user_access_agent_group_auth", "agent_id", "group_id", "is_auth"),
+        Index(
+            "ix_agent_chat_user_access_agent_group_sort",
+            "agent_id",
+            "group_id",
+            "nick_name",
+            "username",
+        ),
     )
 
 

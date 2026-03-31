@@ -20,8 +20,11 @@ from ...permissions import (
     require_manage_menu_async,
     require_menu_action_async,
 )
-from ...services.chat_user_sync import create_agent_chat_user_sync_task, sync_task_out
-from ...services.chat_user_sync import update_agent_chat_user_accesses
+from ...services.chat_user_sync import (
+    create_agent_chat_user_sync_task,
+    fetch_sync_task_out,
+    update_agent_chat_user_accesses,
+)
 from ...services.serializers import agent_detail, model_detail
 from ...tasks import enqueue_agent_chat_user_sync
 from .common import (
@@ -549,16 +552,16 @@ async def sync_agent_chat_users(
         task.error = str(exc)
         task.message = str(exc)
         await db.commit()
-    return sync_task_out(task)
+    return await fetch_sync_task_out(db, task.id)
 
 
-@router.put("/agents/{agent_id}/chat-users", response_model=schemas.AgentChatUserView)
+@router.put("/agents/{agent_id}/chat-users", response_model=schemas.AgentChatUserGroupView)
 async def update_agent_chat_users(
     agent_id: str,
     payload: schemas.AgentChatUserAccessUpdateRequest,
     current_user: models.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> schemas.AgentChatUserView:
+) -> schemas.AgentChatUserGroupView:
     await require_menu_action_async(db, current_user, action="edit", menu_id="agents")
 
     agent = (await db.execute(select(models.Agent).where(models.Agent.id == agent_id))).scalar_one_or_none()

@@ -34,6 +34,7 @@ async def create_fit2cloud_agent_sync_task(
     application_id: str,
     application_name: str,
     sync_chat_users: bool,
+    shared_chat_catalog: bool = False,
 ) -> models.SyncTask:
     task = models.SyncTask(
         task_type="fit2cloud_agent_sync",
@@ -47,7 +48,10 @@ async def create_fit2cloud_agent_sync_task(
         completed_steps=0,
         created_by=current_user.id,
         message="等待同步",
-        payload={"sync_chat_users": bool(sync_chat_users)},
+        payload={
+            "sync_chat_users": bool(sync_chat_users),
+            "shared_chat_catalog": bool(shared_chat_catalog),
+        },
     )
     db.add(task)
     await db.flush()
@@ -186,11 +190,19 @@ async def run_fit2cloud_agent_sync_task(task_id: str) -> None:
         if not task:
             return
 
+        sync_chat_users = bool((task.payload or {}).get("sync_chat_users"))
+        shared_chat_catalog = bool((task.payload or {}).get("shared_chat_catalog"))
+        created_by = int(task.created_by or 0)
+        workspace_id = str(task.workspace_id or "").strip()
+        external_id = str(task.external_id or "").strip()
+        workspace_name = str(task.workspace_name or workspace_id).strip()
+        application_name = str(task.agent_name or external_id).strip()
+        total_steps = int(task.total_steps or 0)
         config = await db.get(models.AgentApiConfig, task.config_id) if task.config_id else None
         if not config:
             await _mark_task_failed(db, task, "同步任务缺少 API 配置")
             return
-        if not task.workspace_id or not task.external_id:
+        if not workspace_id or not external_id:
             await _mark_task_failed(db, task, "同步任务缺少工作空间或应用标识")
             return
 
@@ -205,25 +217,27 @@ async def run_fit2cloud_agent_sync_task(task_id: str) -> None:
             agent, result = await _sync_single_fit2cloud_agent(
                 db,
                 config=config,
-                workspace_id=task.workspace_id,
-                workspace_name=task.workspace_name or task.workspace_id,
-                application_id=task.external_id,
-                application_name=task.agent_name,
+                workspace_id=workspace_id,
+                workspace_name=workspace_name,
+                application_id=external_id,
+                application_name=application_name,
             )
+            sync_message = f"智能体已{'新增' if result == 'imported' else '更新'}"
             task.agent_id = agent.id
             task.completed_steps = 3
             task.total_records = 1
             task.processed_records = 1
-            task.message = f"智能体已{ '新增' if result == 'imported' else '更新' }"
+            task.message = sync_message
             task.updated_at = _now()
             await db.commit()
 
-            if bool((task.payload or {}).get("sync_chat_users")):
+            if sync_chat_users:
                 chat_task = await create_agent_chat_user_sync_task(
                     db,
-                    current_user=models.User(id=task.created_by or 0),
+                    current_user=models.User(id=created_by),
                     agent=agent,
                     config_id=int(config.id),
+                    skip_catalog_sync=shared_chat_catalog,
                 )
                 await db.commit()
                 try:
@@ -234,13 +248,14 @@ async def run_fit2cloud_agent_sync_task(task_id: str) -> None:
                     chat_task.error = str(exc)
                     chat_task.message = str(exc)
                     await db.commit()
-                payload = dict(task.payload or {})
-                payload["chat_sync_task_id"] = chat_task.id
-                task.payload = payload
-                task.completed_steps = task.total_steps
-                task.message = f"{task.message}，已创建对话用户同步任务"
+                task.payload = {
+                    "sync_chat_users": True,
+                    "chat_sync_task_id": chat_task.id,
+                }
+                task.completed_steps = total_steps
+                task.message = f"{sync_message}，已创建对话用户同步任务"
             else:
-                task.completed_steps = task.total_steps
+                task.completed_steps = total_steps
 
             task.status = "completed"
             task.finished_at = _now()

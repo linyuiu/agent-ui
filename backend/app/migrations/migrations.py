@@ -273,11 +273,35 @@ def ensure_schema() -> None:
             )
             conn.execute(text("ALTER TABLE chat_user_group_members ALTER COLUMN group_name SET NOT NULL"))
 
+        if "agent_chat_user_groups" not in tables:
+            conn.execute(
+                text(
+                    "CREATE TABLE IF NOT EXISTS agent_chat_user_groups ("
+                    "id SERIAL PRIMARY KEY, "
+                    "agent_id VARCHAR(64) NOT NULL, "
+                    "group_id VARCHAR(255) NOT NULL, "
+                    "group_name VARCHAR(255) NOT NULL DEFAULT '', "
+                    "authorized_count INTEGER NOT NULL DEFAULT 0, "
+                    "total_users INTEGER NOT NULL DEFAULT 0, "
+                    "synced_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(), "
+                    "CONSTRAINT uq_agent_chat_user_group UNIQUE (agent_id, group_id)"
+                    ")"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_agent_chat_user_groups_agent_sort "
+                    "ON agent_chat_user_groups (agent_id, group_name, group_id)"
+                )
+            )
+
         if "agent_chat_user_accesses" in tables:
             columns = _column_names(inspector, "agent_chat_user_accesses")
             for name, ddl in (
                 ("group_name", "VARCHAR(255)"),
                 ("username", "VARCHAR(255)"),
+                ("email", "VARCHAR(255)"),
+                ("phone", "VARCHAR(255)"),
                 ("nick_name", "VARCHAR(255)"),
                 ("is_active", "BOOLEAN"),
                 ("source", "VARCHAR(64)"),
@@ -290,12 +314,50 @@ def ensure_schema() -> None:
                     conn.execute(text(f"ALTER TABLE agent_chat_user_accesses ADD COLUMN {name} {ddl}"))
             conn.execute(text("UPDATE agent_chat_user_accesses SET group_name = COALESCE(group_name, '') WHERE group_name IS NULL"))
             conn.execute(text("UPDATE agent_chat_user_accesses SET username = COALESCE(username, '') WHERE username IS NULL"))
+            conn.execute(text("UPDATE agent_chat_user_accesses SET email = COALESCE(email, '') WHERE email IS NULL"))
+            conn.execute(text("UPDATE agent_chat_user_accesses SET phone = COALESCE(phone, '') WHERE phone IS NULL"))
+            conn.execute(
+                text(
+                    "UPDATE agent_chat_user_accesses AS access "
+                    "SET email = COALESCE(chat.email, access.email, ''), "
+                    "phone = COALESCE(chat.phone, access.phone, '') "
+                    "FROM chat_users AS chat "
+                    "WHERE chat.id = access.chat_user_id "
+                    "AND ((access.email IS NULL OR access.email = '') "
+                    "OR (access.phone IS NULL OR access.phone = ''))"
+                )
+            )
             conn.execute(text("UPDATE agent_chat_user_accesses SET nick_name = COALESCE(nick_name, '') WHERE nick_name IS NULL"))
             conn.execute(text("UPDATE agent_chat_user_accesses SET source = COALESCE(source, '') WHERE source IS NULL"))
             conn.execute(text("UPDATE agent_chat_user_accesses SET create_time = COALESCE(create_time, '') WHERE create_time IS NULL"))
             conn.execute(text("UPDATE agent_chat_user_accesses SET update_time = COALESCE(update_time, '') WHERE update_time IS NULL"))
             conn.execute(text("UPDATE agent_chat_user_accesses SET is_auth = COALESCE(is_auth, FALSE) WHERE is_auth IS NULL"))
             conn.execute(text("UPDATE agent_chat_user_accesses SET raw_payload = '{}'::json WHERE raw_payload IS NULL"))
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_agent_chat_user_access_agent_group_lookup "
+                    "ON agent_chat_user_accesses (agent_id, group_id, chat_user_id)"
+                )
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO agent_chat_user_groups (agent_id, group_id, group_name, authorized_count, total_users, synced_at) "
+                    "SELECT "
+                    "agent_id, "
+                    "group_id, "
+                    "MAX(group_name), "
+                    "COALESCE(SUM(CASE WHEN is_auth THEN 1 ELSE 0 END), 0), "
+                    "COUNT(chat_user_id), "
+                    "COALESCE(MAX(synced_at), NOW()) "
+                    "FROM agent_chat_user_accesses "
+                    "GROUP BY agent_id, group_id "
+                    "ON CONFLICT (agent_id, group_id) DO UPDATE SET "
+                    "group_name = EXCLUDED.group_name, "
+                    "authorized_count = EXCLUDED.authorized_count, "
+                    "total_users = EXCLUDED.total_users, "
+                    "synced_at = EXCLUDED.synced_at"
+                )
+            )
 
         if "sync_tasks" in tables:
             columns = _column_names(inspector, "sync_tasks")
@@ -349,6 +411,18 @@ def ensure_schema() -> None:
                 text(
                     "CREATE INDEX IF NOT EXISTS ix_agent_chat_user_access_agent_auth "
                     "ON agent_chat_user_accesses (agent_id, is_auth)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_agent_chat_user_access_agent_group_auth "
+                    "ON agent_chat_user_accesses (agent_id, group_id, is_auth)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_agent_chat_user_access_agent_group_sort "
+                    "ON agent_chat_user_accesses (agent_id, group_id, nick_name, username)"
                 )
             )
 

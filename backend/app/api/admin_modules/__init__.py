@@ -1,3 +1,4 @@
+from .chat_users import router as chat_users_router
 from .permissions import router as permissions_router
 from .resources import router as resources_router
 from .sso_settings import router as sso_settings_router
@@ -8,6 +9,7 @@ from .users_roles_groups import router as users_roles_groups_router
 
 ADMIN_MODULE_ROUTERS = (
     users_roles_groups_router,
+    chat_users_router,
     permissions_router,
     resources_router,
     sync_configs_router,

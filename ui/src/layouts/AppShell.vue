@@ -44,6 +44,14 @@
                     </button>
                     <button
                       class="nav-sub-item"
+                      :class="{ active: activeSystemSubmodule === 'chat-users' }"
+                      type="button"
+                      @click="goToAdminSubmodule('chat-users')"
+                    >
+                      对话用户
+                    </button>
+                    <button
+                      class="nav-sub-item"
                       :class="{ active: activeSystemSubmodule === 'permissions' }"
                       type="button"
                       @click="goToAdminSubmodule('permissions')"
@@ -203,6 +211,7 @@ const sidebarModules = computed(() => modules.value.filter((item) => item.id !==
 
 const adminSubmoduleList = [
   'user-role',
+  'chat-users',
   'permissions',
   'system-settings',
   'auth-settings',

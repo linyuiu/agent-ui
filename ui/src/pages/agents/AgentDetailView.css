@@ -12,6 +12,83 @@
   gap: 14px;
 }
 
+.chat-user-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 6px 0 10px;
+  background: linear-gradient(180deg, rgba(248, 252, 252, 0.98), rgba(248, 252, 252, 0.92));
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid rgba(15, 40, 55, 0.06);
+}
+
+.search-box.chat-user-search-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(15, 40, 55, 0.1);
+  background: #fff;
+  min-width: 260px;
+  width: min(360px, calc(100% - 110px));
+  box-sizing: border-box;
+}
+
+.search-box.chat-user-search-box input {
+  border: none;
+  outline: none;
+  width: 100%;
+  font-size: 14px;
+  background: transparent;
+}
+
+.chat-user-filter-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 40, 55, 0.1);
+  background: #fff;
+  color: #4c5f66;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  box-sizing: border-box;
+  cursor: pointer;
+  transition:
+    border-color 0.2s ease,
+    background-color 0.2s ease,
+    color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.chat-user-filter-toggle input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #0fb3b9;
+}
+
+.chat-user-filter-toggle:hover {
+  border-color: rgba(15, 179, 185, 0.32);
+  box-shadow: 0 10px 20px rgba(15, 179, 185, 0.08);
+}
+
+.chat-user-filter-toggle.active {
+  border-color: rgba(15, 179, 185, 0.32);
+  background: rgba(15, 179, 185, 0.08);
+  color: #15737b;
+  box-shadow: 0 10px 20px rgba(15, 179, 185, 0.08);
+}
+
 .section-header.compact {
   margin-bottom: 0;
 }
@@ -36,34 +113,86 @@
   padding: 12px;
   display: grid;
   gap: 10px;
+  background: #fff;
 }
 
 .chat-user-group-head {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
+  padding: 4px 0 8px;
+  cursor: pointer;
+  transition:
+    border-color 0.2s ease,
+    background-color 0.2s ease,
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.chat-user-group-head.active {
+  margin: -2px;
+  padding: 6px 2px 10px;
+  border-bottom: 1px solid rgba(15, 40, 55, 0.06);
+}
+
+.chat-user-group-head:hover {
+  transform: translateY(-1px);
+}
+
+.chat-user-group-meta {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.chat-user-group-meta strong,
+.chat-user-group-meta small {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .chat-user-group-actions {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  justify-self: end;
+  min-width: 0;
 }
 
-.chat-user-group-head > div {
-  display: grid;
-  gap: 2px;
+.chat-user-group-count {
+  white-space: nowrap;
 }
 
 .chat-user-group-head small {
   color: #74848a;
 }
 
+.chat-user-group-bulk-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 40, 55, 0.08);
+  background: rgba(248, 252, 252, 0.9);
+}
+
+.chat-user-group-body {
+  display: grid;
+  gap: 8px;
+}
+
 .chat-user-list {
   display: grid;
   gap: 8px;
+}
+
+.chat-user-toolbar .primary.small {
+  flex: 0 0 auto;
 }
 
 .chat-user-item {
@@ -111,4 +240,51 @@
   min-height: 34px;
   padding: 6px 12px;
   font-size: 13px;
+}
+
+.ghost.small.compact {
+  min-width: 0;
+  min-height: 30px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.primary.small {
+  min-width: 96px;
+  min-height: 36px;
+  padding: 8px 14px;
+  font-size: 13px;
+}
+
+@media (max-width: 900px) {
+  .chat-user-toolbar {
+    justify-content: stretch;
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .search-box.chat-user-search-box {
+    width: 100%;
+  }
+
+  .chat-user-filter-toggle {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .chat-user-toolbar .primary.small {
+    width: 100%;
+  }
+
+  .chat-user-group-head {
+    grid-template-columns: 1fr;
+  }
+
+  .chat-user-group-actions {
+    justify-self: stretch;
+    width: 100%;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
 }

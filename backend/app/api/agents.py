@@ -7,7 +7,11 @@ from .. import models, schemas
 from ..auth import get_current_user
 from ..db import get_db
 from ..permissions import evaluate_permission_async, is_super_admin, require_menu_action_async
-from ..services.chat_user_sync import build_agent_chat_user_view, user_can_view_synced_agent_async
+from ..services.chat_user_sync import (
+    build_agent_chat_user_group_view,
+    build_agent_chat_user_view,
+    user_can_view_synced_agent_async,
+)
 from ..services.serializers import agent_detail, agent_summary
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -89,6 +93,8 @@ async def list_agents(
                 models.Agent.groups,
                 models.Agent.source_type,
                 models.Agent.is_synced,
+                models.Agent.sync_config_id,
+                models.Agent.external_id,
             )
         )
     agents = (await db.execute(statement.order_by(models.Agent.created_at.desc()))).scalars().all()
@@ -117,6 +123,40 @@ async def get_agent(
     return agent_detail(agent)
 
 
+@router.get("/{agent_id}/detail-page", response_model=schemas.AgentDetailPage)
+async def get_agent_detail_page(
+    agent_id: str,
+    current_user: models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> schemas.AgentDetailPage:
+    await require_menu_action_async(db, current_user, action="view", menu_id="agents")
+    agent = (await db.execute(select(models.Agent).where(models.Agent.id == agent_id))).scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if not await _can_view_agent_async(db, current_user, agent):
+        raise HTTPException(status_code=403, detail="访问需要权限")
+
+    manageable = await _can_manage_agent_chat_users_async(db, current_user, agent)
+    chat_users = await build_agent_chat_user_view(
+        db,
+        agent_id=agent_id,
+        manageable=manageable,
+        sync_supported=bool(agent.is_synced and agent.sync_config_id and agent.external_id),
+    )
+    initial_group = None
+    if chat_users.groups:
+        initial_group = await build_agent_chat_user_group_view(
+            db,
+            agent_id=agent_id,
+            group_id=chat_users.groups[0].id,
+        )
+    return schemas.AgentDetailPage(
+        agent=agent_detail(agent),
+        chat_users=chat_users,
+        initial_group=initial_group,
+    )
+
+
 @router.get("/{agent_id}/chat-users", response_model=schemas.AgentChatUserView)
 async def get_agent_chat_users(
     agent_id: str,
@@ -135,3 +175,18 @@ async def get_agent_chat_users(
         manageable=manageable,
         sync_supported=bool(agent.is_synced and agent.sync_config_id and agent.external_id),
     )
+
+
+@router.get("/{agent_id}/chat-users/{group_id}", response_model=schemas.AgentChatUserGroupView)
+async def get_agent_chat_user_group(
+    agent_id: str,
+    group_id: str,
+    current_user: models.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> schemas.AgentChatUserGroupView:
+    agent = (await db.execute(select(models.Agent).where(models.Agent.id == agent_id))).scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if not await _can_view_agent_async(db, current_user, agent):
+        raise HTTPException(status_code=403, detail="访问需要权限")
+    return await build_agent_chat_user_group_view(db, agent_id=agent_id, group_id=group_id)
