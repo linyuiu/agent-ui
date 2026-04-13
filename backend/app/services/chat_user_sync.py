@@ -542,13 +542,14 @@ async def run_agent_chat_user_sync_task(task_id: str) -> None:
         await db.commit()
 
         try:
+            catalog_user_count = 0
             if skip_catalog_sync:
                 groups = await load_synced_chat_user_groups(db)
-                user_count = await count_synced_chat_users(db)
+                catalog_user_count = await count_synced_chat_users(db)
                 task.total_steps = max(1 + len(groups), 1)
                 task.completed_steps = 1
-                task.total_records = user_count
-                task.processed_records = user_count
+                task.total_records = catalog_user_count
+                task.processed_records = catalog_user_count
                 task.message = "正在同步智能体对话用户"
             else:
                 groups, users = await sync_chat_user_catalog(
@@ -556,10 +557,11 @@ async def run_agent_chat_user_sync_task(task_id: str) -> None:
                     base_url=config.base_url.rstrip("/"),
                     token=config.token,
                 )
+                catalog_user_count = len(users)
                 task.total_steps = max(2 + len(groups), 2)
                 task.completed_steps = 2
-                task.total_records = len(users)
-                task.processed_records = len(users)
+                task.total_records = catalog_user_count
+                task.processed_records = catalog_user_count
                 task.message = "正在同步智能体对话用户"
             task.updated_at = _now()
             await db.commit()
@@ -572,7 +574,7 @@ async def run_agent_chat_user_sync_task(task_id: str) -> None:
                 groups=groups,
             )
             task.completed_steps = task.total_steps
-            task.processed_records = len(users) + access_count
+            task.processed_records = catalog_user_count + access_count
             task.total_records = task.processed_records
             task.status = "completed"
             task.message = f"同步完成，共同步 {access_count} 条智能体对话用户记录"

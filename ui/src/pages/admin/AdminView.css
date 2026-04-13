@@ -1,4 +1,15 @@
 .admin-view {
-  display: grid;
-  gap: 28px;
+  height: 100%;
+  min-height: 0;
+}
+
+.admin-view > :deep(.section) {
+  align-self: start;
+  min-width: 0;
+}
+
+.admin-view > :deep(.chat-user-section:not(.chat-user-section--compact):not(.chat-user-section--with-detail)) {
+  align-self: stretch;
+  height: 100%;
+  min-height: 0;
 }

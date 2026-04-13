@@ -1,5 +1,11 @@
 <template>
-  <div class="section">
+  <div
+    class="section chat-user-section"
+    :class="{
+      'chat-user-section--with-detail': !!selectedChatUser,
+      'chat-user-section--compact': !showPagination && !selectedChatUser,
+    }"
+  >
     <div class="section-header">
       <div>
         <h2>对话用户</h2>
@@ -7,14 +13,16 @@
       </div>
     </div>
 
-    <div class="panel">
+    <div class="panel chat-user-panel" :class="{ 'chat-user-panel--compact': !showPagination && !selectedChatUser }">
       <div class="chat-user-toolbar">
         <div class="search-box">
           <input
             v-model="keyword"
             type="text"
             placeholder="搜索用户名、昵称、邮箱或手机号"
-            @keydown.enter.prevent="handleSearch"
+            @compositionstart="handleCompositionStart"
+            @compositionend="handleCompositionEnd"
+            @keydown.enter="handleSearchKeydown"
           />
         </div>
 
@@ -66,10 +74,10 @@
               </button>
             </div>
           </div>
-          <button class="ghost" type="button" :disabled="loading" @click="handleReset">
+          <button class="ghost chat-user-toolbar__button" type="button" :disabled="loading" @click="handleReset">
             重置
           </button>
-          <button class="primary" type="button" :disabled="loading" @click="handleSearch">
+          <button class="primary chat-user-toolbar__button" type="button" :disabled="loading" @click="handleSearch">
             {{ loading ? '加载中...' : '查询' }}
           </button>
         </div>
@@ -83,82 +91,123 @@
 
       <p v-if="error" class="state error">{{ error }}</p>
 
-      <div class="chat-user-table">
-        <div class="chat-user-table__head">
-          <div>用户名</div>
-          <div>昵称</div>
-          <div>来源</div>
-          <div>状态</div>
-          <div>绑定系统用户</div>
-          <div>可访问智能体</div>
-          <div>用户组</div>
-          <div>同步时间</div>
-        </div>
+      <div class="chat-user-table-shell" :class="{ 'chat-user-table-shell--compact': !showPagination && !selectedChatUser }">
+        <div class="chat-user-table" :class="{ 'chat-user-table--compact': !showPagination && !selectedChatUser }">
+          <div class="chat-user-table__head">
+            <div>用户名</div>
+            <div>昵称</div>
+            <div>来源</div>
+            <div>状态</div>
+            <div>绑定系统用户</div>
+            <div>可访问智能体</div>
+            <div>用户组</div>
+            <div>同步时间</div>
+          </div>
 
-        <div v-if="loading" class="state">加载对话用户中...</div>
-        <div v-else-if="items.length" class="chat-user-table__body">
-          <button
-            v-for="item in items"
-            :key="item.id"
-            type="button"
-            class="chat-user-row"
-            :class="{ active: selectedChatUserId === item.id }"
-            @click="selectChatUser(item)"
+          <div
+            ref="tableScrollRef"
+            class="chat-user-table__scroll"
+            :class="{ 'chat-user-table__scroll--compact': !showPagination && !selectedChatUser }"
           >
-            <div class="chat-user-primary">
-              <strong>{{ item.username }}</strong>
-              <small>{{ item.id }}</small>
+            <div v-if="loading" class="state chat-user-table__state">加载对话用户中...</div>
+            <div
+              v-else-if="items.length"
+              class="chat-user-table__body"
+              :class="{ 'chat-user-table__body--compact': !showPagination && !selectedChatUser }"
+            >
+              <button
+                v-for="item in items"
+                :key="item.id"
+                type="button"
+                class="chat-user-row"
+                :class="{ active: selectedChatUserId === item.id }"
+                @click="selectChatUser(item)"
+              >
+                <div class="chat-user-primary">
+                  <strong>{{ item.username }}</strong>
+                  <small>{{ item.id }}</small>
+                </div>
+                <div>{{ item.nick_name || '-' }}</div>
+                <div>
+                  <span class="tag tag-small">{{ item.source || '未知来源' }}</span>
+                </div>
+                <div>
+                  <span class="tag tag-small" :class="item.is_active ? 'editable' : 'readonly'">
+                    {{ item.is_active ? 'active' : 'disabled' }}
+                  </span>
+                </div>
+                <div>
+                  <span v-if="item.is_bound" class="binding-stack">
+                    <strong>{{ item.system_username || item.system_account }}</strong>
+                    <small>{{ item.system_account || '-' }}</small>
+                  </span>
+                  <span v-else class="binding-empty">未绑定</span>
+                </div>
+                <div>
+                  <span class="count-pill compact">{{ item.accessible_agent_count }} 个</span>
+                </div>
+                <div>
+                  <div v-if="item.user_group_names.length" class="chip-row">
+                    <span
+                      v-for="groupName in item.user_group_names"
+                      :key="`${item.id}-${groupName}`"
+                      class="pill-chip"
+                    >
+                      {{ groupName }}
+                    </span>
+                  </div>
+                  <span v-else class="binding-empty">未分组</span>
+                </div>
+                <div>{{ formatIsoDateTime(item.synced_at || '') || '-' }}</div>
+              </button>
             </div>
-            <div>{{ item.nick_name || '-' }}</div>
-            <div>
-              <span class="tag tag-small">{{ item.source || '未知来源' }}</span>
-            </div>
-            <div>
-              <span class="tag tag-small" :class="item.is_active ? 'editable' : 'readonly'">
-                {{ item.is_active ? 'active' : 'disabled' }}
-              </span>
-            </div>
-            <div>
-              <span v-if="item.is_bound" class="binding-stack">
-                <strong>{{ item.system_username || item.system_account }}</strong>
-                <small>{{ item.system_account || '-' }}</small>
-              </span>
-              <span v-else class="binding-empty">未绑定</span>
-            </div>
-            <div>
-              <span class="count-pill compact">{{ item.accessible_agent_count }} 个</span>
-            </div>
-            <div>
-              <div v-if="item.user_group_names.length" class="chip-row">
-                <span
-                  v-for="groupName in item.user_group_names"
-                  :key="`${item.id}-${groupName}`"
-                  class="pill-chip"
-                >
-                  {{ groupName }}
-                </span>
-              </div>
-              <span v-else class="binding-empty">未分组</span>
-            </div>
-            <div>{{ formatIsoDateTime(item.synced_at || '') || '-' }}</div>
-          </button>
+            <p v-else class="state chat-user-table__state">暂无对话用户数据。</p>
+          </div>
         </div>
-        <p v-else class="state">暂无对话用户数据。</p>
       </div>
 
-      <div class="chat-user-pagination">
-        <button class="ghost" type="button" :disabled="page <= 1 || loading" @click="goToPage(page - 1)">
-          上一页
-        </button>
-        <span>第 {{ page }} / {{ pageCount }} 页</span>
-        <button
-          class="ghost"
-          type="button"
-          :disabled="page >= pageCount || loading"
-          @click="goToPage(page + 1)"
-        >
-          下一页
-        </button>
+      <div v-if="showPagination" class="chat-user-pagination">
+        <div class="chat-user-pagination__nav">
+          <label class="page-size-inline">
+            <span>每页</span>
+            <select v-model.number="pageSize" @change="handlePageSizeChange">
+              <option v-for="size in pageSizeOptions" :key="size" :value="size">
+                {{ size }} 条
+              </option>
+            </select>
+          </label>
+          <button
+            class="ghost chat-user-pagination__button"
+            type="button"
+            :disabled="page <= 1 || loading"
+            @click="goToPage(page - 1)"
+          >
+            上一页
+          </button>
+          <span class="chat-user-pagination__page-text">第 {{ page }} / {{ pageCount }} 页</span>
+          <label class="page-jump-inline">
+            <span>跳至</span>
+            <input
+              v-model="jumpPageInput"
+              type="number"
+              min="1"
+              :max="pageCount"
+              @keydown.enter.prevent="handleJumpPage"
+            />
+            <span>页</span>
+          </label>
+          <button class="ghost chat-user-pagination__button" type="button" :disabled="loading" @click="handleJumpPage">
+            跳转
+          </button>
+          <button
+            class="ghost chat-user-pagination__button"
+            type="button"
+            :disabled="page >= pageCount || loading"
+            @click="goToPage(page + 1)"
+          >
+            下一页
+          </button>
+        </div>
       </div>
     </div>
 
@@ -247,9 +296,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
+import { useImeFriendlyEnter } from '../../../composables/use-ime-friendly-enter'
 import {
   fetchChatUserAccessibleAgents,
   fetchChatUsers,
@@ -264,7 +314,8 @@ const items = ref<ChatUserCatalogItem[]>([])
 const sourceOptions = ref<string[]>([])
 const total = ref(0)
 const page = ref(1)
-const pageSize = 20
+const pageSize = ref(20)
+const pageSizeOptions = [20, 50, 100, 200]
 const keyword = ref('')
 const selectedSources = ref<string[]>([])
 const binding = ref<'' | 'bound' | 'unbound'>('')
@@ -277,6 +328,8 @@ const detailError = ref('')
 const detailCache = ref<Record<string, ChatUserAccessibleAgentsResponse>>({})
 const sourceDropdownOpen = ref(false)
 const sourceFilterRef = ref<HTMLElement | null>(null)
+const jumpPageInput = ref('1')
+const tableScrollRef = ref<HTMLElement | null>(null)
 
 const bindingOptions = [
   { value: '' as const, label: '全部用户' },
@@ -284,7 +337,8 @@ const bindingOptions = [
   { value: 'unbound' as const, label: '只看未绑定系统用户' },
 ]
 
-const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
+const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
+const showPagination = computed(() => total.value > pageSize.value && pageCount.value > 1)
 const sourceSummary = computed(() => {
   if (!selectedSources.value.length) return '全部来源'
   if (selectedSources.value.length === 1) return selectedSources.value[0]
@@ -300,7 +354,7 @@ const loadChatUsers = async () => {
   try {
     const response = await fetchChatUsers({
       page: page.value,
-      page_size: pageSize,
+      page_size: pageSize.value,
       q: keyword.value,
       source: selectedSources.value,
       binding: binding.value,
@@ -312,6 +366,10 @@ const loadChatUsers = async () => {
       selectedChatUserId.value = ''
       selectedChatUser.value = null
       detailError.value = ''
+    }
+    await nextTick()
+    if (tableScrollRef.value) {
+      tableScrollRef.value.scrollTop = 0
     }
   } catch (err) {
     error.value = err instanceof Error ? err.message : '加载对话用户失败'
@@ -351,6 +409,12 @@ const handleSearch = async () => {
   await loadChatUsers()
 }
 
+const {
+  handleCompositionStart,
+  handleCompositionEnd,
+  handleEnterKeydown: handleSearchKeydown,
+} = useImeFriendlyEnter(handleSearch, { preventDefault: true })
+
 const handleReset = async () => {
   keyword.value = ''
   selectedSources.value = []
@@ -369,10 +433,27 @@ const setBinding = async (value: '' | 'bound' | 'unbound') => {
 
 const goToPage = async (target: number) => {
   if (target < 1 || target > pageCount.value || target === page.value) {
+    jumpPageInput.value = String(page.value)
     return
   }
   page.value = target
+  jumpPageInput.value = String(target)
   await loadChatUsers()
+}
+
+const handlePageSizeChange = async () => {
+  page.value = 1
+  jumpPageInput.value = '1'
+  await loadChatUsers()
+}
+
+const handleJumpPage = async () => {
+  const target = Number.parseInt(jumpPageInput.value, 10)
+  if (Number.isNaN(target)) {
+    jumpPageInput.value = String(page.value)
+    return
+  }
+  await goToPage(target)
 }
 
 const goToAgentDetail = async (agentId: string) => {
@@ -399,8 +480,8 @@ const clearSources = () => {
 
 const handleDocumentClick = (event: MouseEvent) => {
   const target = event.target as Node | null
-  if (!sourceFilterRef.value || !target) return
-  if (!sourceFilterRef.value.contains(target)) {
+  if (!target) return
+  if (sourceFilterRef.value && !sourceFilterRef.value.contains(target)) {
     sourceDropdownOpen.value = false
   }
 }
@@ -408,6 +489,7 @@ const handleDocumentClick = (event: MouseEvent) => {
 onMounted(async () => {
   document.addEventListener('click', handleDocumentClick)
   await loadChatUsers()
+  jumpPageInput.value = String(page.value)
 })
 
 onBeforeUnmount(() => {
