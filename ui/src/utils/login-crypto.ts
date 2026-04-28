@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
 type LoginKeyResponse = {
   key_id: string
@@ -39,7 +39,7 @@ const toBase64 = (bytes: ArrayBuffer | Uint8Array): string => {
 
 const getLoginKey = async (): Promise<LoginKeyResponse> => {
   if (!cachedLoginKey) {
-    cachedLoginKey = fetch(`${API_BASE}/auth/login-key`).then(async (response) => {
+    cachedLoginKey = fetch(`${API_BASE}/auth/login-key`, { credentials: 'include' }).then(async (response) => {
       if (!response.ok) {
         throw new Error('获取登录加密公钥失败')
       }
@@ -116,4 +116,3 @@ export const encryptLoginCredentials = async (
     key_id: keyPayload.key_id,
   }
 }
-

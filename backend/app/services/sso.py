@@ -489,10 +489,10 @@ def build_callback_url(provider: models.AuthProviderConfig) -> str:
     return f"{base}/auth/sso/callback/{quote(provider.key, safe='')}"
 
 
-def build_frontend_redirect(token: str, target_path: str = "/home/agents") -> str:
+def build_frontend_redirect(target_path: str = "/home/agents") -> str:
     base = settings.FRONTEND_BASE_URL.rstrip("/")
     safe_target = target_path if target_path.startswith("/") else "/home/agents"
-    return f"{base}/login?redirect={quote(safe_target, safe='')}#token={quote(token, safe='')}"
+    return f"{base}/login?redirect={quote(safe_target, safe='')}&sso=1"
 
 
 def build_frontend_bind_redirect(

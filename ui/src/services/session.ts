@@ -1,10 +1,11 @@
 export const SESSION_KEYS = {
-  accessToken: 'access_token',
   email: 'user_email',
   role: 'user_role',
   username: 'user_name',
   account: 'user_account',
   permissions: 'user_permissions',
+  expiresAt: 'session_expires_at',
+  legacyAccessToken: 'access_token',
 } as const
 
 type SessionProfile = {
@@ -22,13 +23,20 @@ type LoginUserPayload = {
 }
 
 type LoginPayload = {
-  access_token?: string
   user?: LoginUserPayload
+  session_expires_at?: string
 }
 
 const getItem = (key: string) => localStorage.getItem(key) || ''
 
-export const getSessionToken = (): string => getItem(SESSION_KEYS.accessToken)
+export const getSessionExpiresAt = (): string => getItem(SESSION_KEYS.expiresAt)
+
+export const isSessionExpired = (): boolean => {
+  const raw = getSessionExpiresAt()
+  if (!raw) return false
+  const value = Date.parse(raw)
+  return Number.isFinite(value) && value <= Date.now()
+}
 
 export const getSessionProfile = (): SessionProfile => ({
   email: getItem(SESSION_KEYS.email),
@@ -44,9 +52,6 @@ export const clearSession = (): void => {
 }
 
 export const setSessionFromLogin = (payload: LoginPayload): void => {
-  if (payload.access_token) {
-    localStorage.setItem(SESSION_KEYS.accessToken, payload.access_token)
-  }
   if (payload.user?.email) {
     localStorage.setItem(SESSION_KEYS.email, payload.user.email)
   }
@@ -58,6 +63,9 @@ export const setSessionFromLogin = (payload: LoginPayload): void => {
   }
   if (payload.user?.role) {
     localStorage.setItem(SESSION_KEYS.role, payload.user.role)
+  }
+  if (payload.session_expires_at) {
+    localStorage.setItem(SESSION_KEYS.expiresAt, payload.session_expires_at)
   }
 }
 

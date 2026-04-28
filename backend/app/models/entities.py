@@ -26,6 +26,29 @@ class User(Base):
     )
 
 
+class UserLoginSession(Base):
+    __tablename__ = "user_login_sessions"
+
+    id = Column(String(64), primary_key=True, default=lambda: uuid4().hex)
+    user_id = Column(Integer, nullable=False, index=True)
+    token_hash = Column(String(64), unique=True, nullable=True, index=True)
+    status = Column(String(32), nullable=False, default="active", index=True)
+    login_method = Column(String(64), nullable=False, default="local")
+    ip_address = Column(String(64), nullable=False, default="")
+    user_agent = Column(String(512), nullable=False, default="")
+    issued_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_seen_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    ended_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_user_login_sessions_user_status", "user_id", "status"),
+        Index("ix_user_login_sessions_status_expires", "status", "expires_at"),
+        Index("ix_user_login_sessions_user_last_seen", "user_id", "last_seen_at"),
+    )
+
+
 class UserSsoBinding(Base):
     __tablename__ = "user_sso_bindings"
 

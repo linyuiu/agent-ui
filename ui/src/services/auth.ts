@@ -7,3 +7,5 @@ export type PasswordChangePayload = {
 
 export const changePassword = (payload: PasswordChangePayload) =>
   apiPost<{ status: string }>('/auth/password', payload)
+
+export const logout = () => apiPost<{ status: string }>('/auth/logout')

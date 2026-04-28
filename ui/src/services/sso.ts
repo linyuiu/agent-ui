@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
 export type SsoProviderPublic = {
   key: string
@@ -17,9 +17,10 @@ export type SsoBindPending = {
 }
 
 export type SsoLoginResponse = {
-  access_token: string
+  access_token?: string
   token_type: string
   permissions?: unknown
+  session_expires_at?: string
   user?: {
     email?: string
     username?: string
@@ -38,19 +39,45 @@ export type SsoPasswordLoginResult =
   | { type: 'login'; payload: SsoLoginResponse }
   | { type: 'bind_required'; payload: SsoBindPending }
 
+const formatDetail = (detail: unknown, fallback: string) => {
+  if (typeof detail === 'string' && detail.trim()) return detail
+  if (Array.isArray(detail) && detail.length) {
+    return detail
+      .map((item) => {
+        const location = Array.isArray(item?.loc) ? item.loc.join('.') : ''
+        const message = typeof item?.msg === 'string' ? item.msg : ''
+        return [location, message].filter(Boolean).join(': ')
+      })
+      .filter(Boolean)
+      .join('; ') || fallback
+  }
+  if (detail && typeof detail === 'object') {
+    const message = (detail as { message?: unknown; msg?: unknown })?.message || (detail as { msg?: unknown })?.msg
+    if (typeof message === 'string' && message.trim()) return message
+  }
+  return fallback
+}
+
 const parseError = async (response: Response, fallback: string) => {
-  const payload = (await response.json().catch(() => ({}))) as { detail?: string }
-  return payload?.detail || fallback
+  const payload = (await response.json().catch(() => ({}))) as { detail?: unknown }
+  return formatDetail(payload?.detail, fallback)
+}
+
+const syncSessionHeaders = (response: Response) => {
+  const expiresAt = response.headers.get('x-session-expires-at')
+  if (expiresAt) {
+    localStorage.setItem('session_expires_at', expiresAt)
+  }
 }
 
 export const fetchEnabledSsoProviders = async (): Promise<SsoProviderPublic[]> => {
-  const response = await fetch(`${API_BASE}/auth/sso/providers`)
+  const response = await fetch(`${API_BASE}/auth/sso/providers`, { credentials: 'include' })
   if (!response.ok) return []
   return (await response.json()) as SsoProviderPublic[]
 }
 
 export const fetchSsoLoginOptions = async (): Promise<SsoLoginOptions> => {
-  const response = await fetch(`${API_BASE}/auth/sso/options`)
+  const response = await fetch(`${API_BASE}/auth/sso/options`, { credentials: 'include' })
   if (!response.ok) {
     return {
       enabled_methods: ['local'],
@@ -68,6 +95,7 @@ export const ssoPasswordLogin = async (payload: {
 }): Promise<SsoPasswordLoginResult> => {
   const response = await fetch(`${API_BASE}/auth/sso/password-login`, {
     method: 'POST',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
     },
@@ -87,17 +115,18 @@ export const buildSsoStartUrl = (providerKey: string, redirectPath = '/home/agen
     redirectPath
   )}`
 
-export const bindSsoIdentity = async (token: string, bindToken: string) => {
+export const bindSsoIdentity = async (bindToken: string) => {
   const response = await fetch(`${API_BASE}/auth/sso/bind`, {
     method: 'POST',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({ bind_token: bindToken }),
   })
   if (!response.ok) {
     throw new Error(await parseError(response, '绑定单点登录失败'))
   }
+  syncSessionHeaders(response)
   return response.json()
 }

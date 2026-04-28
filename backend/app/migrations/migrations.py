@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from .. import models, security
+from ..config import settings
 from ..db import Base, engine
 from ..services.chat_links import (
     build_proxy_chat_url,
@@ -12,478 +12,24 @@ from ..services.chat_links import (
 )
 
 
-def _column_names(inspector, table: str) -> set[str]:
-    return {col["name"] for col in inspector.get_columns(table)}
-
-
-def _column_map(inspector, table: str) -> dict[str, dict]:
-    return {col["name"]: col for col in inspector.get_columns(table)}
-
-
 def ensure_schema() -> None:
     Base.metadata.create_all(bind=engine)
+    if getattr(settings, "DB_SEED_ON_STARTUP", False):
+        seed_bootstrap_defaults()
 
-    inspector = inspect(engine)
-    tables = set(inspector.get_table_names())
 
-    with engine.begin() as conn:
-        if "users" in tables:
-            columns = _column_names(inspector, "users")
-            if "account" not in columns:
-                conn.execute(text("ALTER TABLE users ADD COLUMN account VARCHAR(255)"))
-            if "username" not in columns:
-                conn.execute(text("ALTER TABLE users ADD COLUMN username VARCHAR(255)"))
-            if "status" not in columns:
-                conn.execute(text("ALTER TABLE users ADD COLUMN status VARCHAR(50)"))
-            if "source" not in columns:
-                conn.execute(text("ALTER TABLE users ADD COLUMN source VARCHAR(50)"))
-            if "source_provider" not in columns:
-                conn.execute(text("ALTER TABLE users ADD COLUMN source_provider VARCHAR(64)"))
-            if "source_subject" not in columns:
-                conn.execute(text("ALTER TABLE users ADD COLUMN source_subject VARCHAR(255)"))
-            if "workspace" not in columns:
-                conn.execute(text("ALTER TABLE users ADD COLUMN workspace VARCHAR(100)"))
-
-            conn.execute(
-                text(
-                    "UPDATE users "
-                    "SET username = COALESCE(NULLIF(username, ''), email) "
-                    "WHERE username IS NULL OR username = ''"
-                )
-            )
-            conn.execute(
-                text(
-                    "UPDATE users "
-                    "SET account = COALESCE(NULLIF(account, ''), email) "
-                    "WHERE account IS NULL OR account = ''"
-                )
-            )
-            conn.execute(
-                text(
-                    "UPDATE users "
-                    "SET status = COALESCE(NULLIF(status, ''), 'active') "
-                    "WHERE status IS NULL OR status = ''"
-                )
-            )
-            conn.execute(
-                text(
-                    "UPDATE users "
-                    "SET source = COALESCE(NULLIF(source, ''), 'local') "
-                    "WHERE source IS NULL OR source = ''"
-                )
-            )
-            conn.execute(
-                text(
-                    "UPDATE users "
-                    "SET source_provider = COALESCE(NULLIF(source_provider, ''), 'local') "
-                    "WHERE source_provider IS NULL OR source_provider = ''"
-                )
-            )
-            conn.execute(
-                text(
-                    "UPDATE users "
-                    "SET source_subject = COALESCE(source_subject, '') "
-                    "WHERE source_subject IS NULL"
-                )
-            )
-            conn.execute(
-                text(
-                    "UPDATE users "
-                    "SET workspace = COALESCE(NULLIF(workspace, ''), 'default') "
-                    "WHERE workspace IS NULL OR workspace = ''"
-                )
-            )
-            conn.execute(text("ALTER TABLE users ALTER COLUMN account SET NOT NULL"))
-            conn.execute(text("ALTER TABLE users ALTER COLUMN username SET NOT NULL"))
-            conn.execute(text("ALTER TABLE users ALTER COLUMN status SET NOT NULL"))
-            conn.execute(text("ALTER TABLE users ALTER COLUMN source SET NOT NULL"))
-            conn.execute(text("ALTER TABLE users ALTER COLUMN source_provider SET NOT NULL"))
-            conn.execute(text("ALTER TABLE users ALTER COLUMN source_subject SET NOT NULL"))
-            conn.execute(text("ALTER TABLE users ALTER COLUMN workspace SET NOT NULL"))
-            conn.execute(
-                text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_account ON users (account)")
-            )
-            conn.execute(text("DROP INDEX IF EXISTS ix_users_username"))
-            conn.execute(text("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_username_key"))
-            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_users_username ON users (username)"))
-
-        if "agents" in tables:
-            columns = _column_names(inspector, "agents")
-            column_defs = _column_map(inspector, "agents")
-            if "group_name" not in columns:
-                conn.execute(text("ALTER TABLE agents ADD COLUMN group_name VARCHAR(255)"))
-            conn.execute(
-                text(
-                    "UPDATE agents "
-                    "SET group_name = COALESCE(group_name, '') "
-                    "WHERE group_name IS NULL"
-                )
-            )
-            conn.execute(text("ALTER TABLE agents ALTER COLUMN group_name SET NOT NULL"))
-            if "groups" not in columns:
-                conn.execute(text("ALTER TABLE agents ADD COLUMN groups JSON"))
-            conn.execute(text("UPDATE agents SET groups = '[]'::json WHERE groups IS NULL"))
-            conn.execute(
-                text(
-                    "UPDATE agents "
-                    "SET groups = json_build_array(group_name) "
-                    "WHERE (groups IS NULL OR COALESCE(json_array_length(groups), 0) = 0) "
-                    "AND group_name IS NOT NULL AND group_name <> ''"
-                )
-            )
-            conn.execute(text("ALTER TABLE agents ALTER COLUMN groups SET NOT NULL"))
-            if "source_type" not in columns:
-                conn.execute(text("ALTER TABLE agents ADD COLUMN source_type VARCHAR(50)"))
-            conn.execute(
-                text(
-                    "UPDATE agents "
-                    "SET source_type = COALESCE(source_type, '') "
-                    "WHERE source_type IS NULL"
-                )
-            )
-            conn.execute(text("ALTER TABLE agents ALTER COLUMN source_type SET NOT NULL"))
-            if "is_synced" not in columns:
-                conn.execute(text("ALTER TABLE agents ADD COLUMN is_synced BOOLEAN"))
-            conn.execute(
-                text(
-                    "UPDATE agents "
-                    "SET is_synced = (source_type IS NOT NULL AND source_type <> '') "
-                    "WHERE is_synced IS NULL"
-                )
-            )
-            conn.execute(text("ALTER TABLE agents ALTER COLUMN is_synced SET NOT NULL"))
-            conn.execute(text("ALTER TABLE agents ALTER COLUMN is_synced SET DEFAULT FALSE"))
-            if "external_id" not in columns:
-                conn.execute(text("ALTER TABLE agents ADD COLUMN external_id VARCHAR(255)"))
-            if "workspace_id" not in columns:
-                conn.execute(text("ALTER TABLE agents ADD COLUMN workspace_id VARCHAR(255)"))
-            if "workspace_name" not in columns:
-                conn.execute(text("ALTER TABLE agents ADD COLUMN workspace_name VARCHAR(255)"))
-            conn.execute(
-                text(
-                    "UPDATE agents "
-                    "SET workspace_name = COALESCE(workspace_name, '') "
-                    "WHERE workspace_name IS NULL"
-                )
-            )
-            conn.execute(text("ALTER TABLE agents ALTER COLUMN workspace_name SET NOT NULL"))
-            if "sync_config_id" not in columns:
-                conn.execute(text("ALTER TABLE agents ADD COLUMN sync_config_id INTEGER"))
-            if "proxy_id" not in columns:
-                conn.execute(text("ALTER TABLE agents ADD COLUMN proxy_id VARCHAR(64)"))
-            conn.execute(
-                text(
-                    "UPDATE agents "
-                    "SET proxy_id = md5(random()::text || clock_timestamp()::text) "
-                    "WHERE proxy_id IS NULL OR proxy_id = ''"
-                )
-            )
-            conn.execute(text("ALTER TABLE agents ALTER COLUMN proxy_id SET NOT NULL"))
-            conn.execute(
-                text("CREATE UNIQUE INDEX IF NOT EXISTS ix_agents_proxy_id ON agents (proxy_id)")
-            )
-            if "upstream_base_url" not in columns:
-                conn.execute(text("ALTER TABLE agents ADD COLUMN upstream_base_url VARCHAR(255)"))
-            conn.execute(
-                text(
-                    "UPDATE agents "
-                    "SET upstream_base_url = COALESCE(upstream_base_url, '') "
-                    "WHERE upstream_base_url IS NULL"
-                )
-            )
-            conn.execute(text("ALTER TABLE agents ALTER COLUMN upstream_base_url SET NOT NULL"))
-            if "upstream_token" not in columns:
-                conn.execute(text("ALTER TABLE agents ADD COLUMN upstream_token VARCHAR(1024)"))
-            conn.execute(
-                text(
-                    "UPDATE agents "
-                    "SET upstream_token = COALESCE(upstream_token, '') "
-                    "WHERE upstream_token IS NULL"
-                )
-            )
-            conn.execute(text("ALTER TABLE agents ALTER COLUMN upstream_token SET NOT NULL"))
-            if "description" in columns:
-                desc_type = str(column_defs["description"].get("type", "")).lower()
-                # Fit2Cloud `desc/prologue` may exceed 1024 chars; keep full text instead of truncating.
-                if "text" not in desc_type:
-                    conn.execute(text("ALTER TABLE agents ALTER COLUMN description TYPE TEXT"))
-
-        if "agent_api_configs" in tables:
-            columns = _column_names(inspector, "agent_api_configs")
-            if "base_url" not in columns:
-                conn.execute(text("ALTER TABLE agent_api_configs ADD COLUMN base_url VARCHAR(255)"))
-            if "token" not in columns:
-                conn.execute(text("ALTER TABLE agent_api_configs ADD COLUMN token VARCHAR(1024)"))
-            conn.execute(
-                text(
-                    "UPDATE agent_api_configs "
-                    "SET token = COALESCE(token, '') "
-                    "WHERE token IS NULL"
-                )
-            )
-
-        if "auth_provider_configs" in tables:
-            conn.execute(
-                text("CREATE UNIQUE INDEX IF NOT EXISTS ux_auth_provider_configs_protocol ON auth_provider_configs (protocol)")
-            )
-
-        if "chat_users" in tables:
-            columns = _column_names(inspector, "chat_users")
-            for name, ddl in (
-                ("username", "VARCHAR(255)"),
-                ("email", "VARCHAR(255)"),
-                ("phone", "VARCHAR(255)"),
-                ("is_active", "BOOLEAN"),
-                ("nick_name", "VARCHAR(255)"),
-                ("source", "VARCHAR(64)"),
-                ("create_time", "VARCHAR(64)"),
-                ("update_time", "VARCHAR(64)"),
-                ("user_group_ids", "JSON"),
-                ("user_group_names", "JSON"),
-                ("raw_payload", "JSON"),
-            ):
-                if name not in columns:
-                    conn.execute(text(f"ALTER TABLE chat_users ADD COLUMN {name} {ddl}"))
-            conn.execute(text("UPDATE chat_users SET email = COALESCE(email, '') WHERE email IS NULL"))
-            conn.execute(text("UPDATE chat_users SET phone = COALESCE(phone, '') WHERE phone IS NULL"))
-            conn.execute(text("UPDATE chat_users SET nick_name = COALESCE(nick_name, '') WHERE nick_name IS NULL"))
-            conn.execute(text("UPDATE chat_users SET source = COALESCE(source, '') WHERE source IS NULL"))
-            conn.execute(text("UPDATE chat_users SET create_time = COALESCE(create_time, '') WHERE create_time IS NULL"))
-            conn.execute(text("UPDATE chat_users SET update_time = COALESCE(update_time, '') WHERE update_time IS NULL"))
-            conn.execute(text("UPDATE chat_users SET user_group_ids = '[]'::json WHERE user_group_ids IS NULL"))
-            conn.execute(text("UPDATE chat_users SET user_group_names = '[]'::json WHERE user_group_names IS NULL"))
-            conn.execute(text("UPDATE chat_users SET raw_payload = '{}'::json WHERE raw_payload IS NULL"))
-
-        if "chat_user_groups" in tables:
-            columns = _column_names(inspector, "chat_user_groups")
-            if "raw_payload" not in columns:
-                conn.execute(text("ALTER TABLE chat_user_groups ADD COLUMN raw_payload JSON"))
-            conn.execute(text("UPDATE chat_user_groups SET raw_payload = '{}'::json WHERE raw_payload IS NULL"))
-
-        if "chat_user_group_members" in tables:
-            columns = _column_names(inspector, "chat_user_group_members")
-            if "group_name" not in columns:
-                conn.execute(text("ALTER TABLE chat_user_group_members ADD COLUMN group_name VARCHAR(255)"))
-            conn.execute(
-                text(
-                    "UPDATE chat_user_group_members "
-                    "SET group_name = COALESCE(group_name, '') "
-                    "WHERE group_name IS NULL"
-                )
-            )
-            conn.execute(text("ALTER TABLE chat_user_group_members ALTER COLUMN group_name SET NOT NULL"))
-
-        if "agent_chat_user_groups" not in tables:
-            conn.execute(
-                text(
-                    "CREATE TABLE IF NOT EXISTS agent_chat_user_groups ("
-                    "id SERIAL PRIMARY KEY, "
-                    "agent_id VARCHAR(64) NOT NULL, "
-                    "group_id VARCHAR(255) NOT NULL, "
-                    "group_name VARCHAR(255) NOT NULL DEFAULT '', "
-                    "authorized_count INTEGER NOT NULL DEFAULT 0, "
-                    "total_users INTEGER NOT NULL DEFAULT 0, "
-                    "synced_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(), "
-                    "CONSTRAINT uq_agent_chat_user_group UNIQUE (agent_id, group_id)"
-                    ")"
-                )
-            )
-            conn.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS ix_agent_chat_user_groups_agent_sort "
-                    "ON agent_chat_user_groups (agent_id, group_name, group_id)"
-                )
-            )
-
-        if "agent_chat_user_accesses" in tables:
-            columns = _column_names(inspector, "agent_chat_user_accesses")
-            for name, ddl in (
-                ("group_name", "VARCHAR(255)"),
-                ("username", "VARCHAR(255)"),
-                ("email", "VARCHAR(255)"),
-                ("phone", "VARCHAR(255)"),
-                ("nick_name", "VARCHAR(255)"),
-                ("is_active", "BOOLEAN"),
-                ("source", "VARCHAR(64)"),
-                ("create_time", "VARCHAR(64)"),
-                ("update_time", "VARCHAR(64)"),
-                ("is_auth", "BOOLEAN"),
-                ("raw_payload", "JSON"),
-            ):
-                if name not in columns:
-                    conn.execute(text(f"ALTER TABLE agent_chat_user_accesses ADD COLUMN {name} {ddl}"))
-            conn.execute(text("UPDATE agent_chat_user_accesses SET group_name = COALESCE(group_name, '') WHERE group_name IS NULL"))
-            conn.execute(text("UPDATE agent_chat_user_accesses SET username = COALESCE(username, '') WHERE username IS NULL"))
-            conn.execute(text("UPDATE agent_chat_user_accesses SET email = COALESCE(email, '') WHERE email IS NULL"))
-            conn.execute(text("UPDATE agent_chat_user_accesses SET phone = COALESCE(phone, '') WHERE phone IS NULL"))
-            conn.execute(
-                text(
-                    "UPDATE agent_chat_user_accesses AS access "
-                    "SET email = COALESCE(chat.email, access.email, ''), "
-                    "phone = COALESCE(chat.phone, access.phone, '') "
-                    "FROM chat_users AS chat "
-                    "WHERE chat.id = access.chat_user_id "
-                    "AND ((access.email IS NULL OR access.email = '') "
-                    "OR (access.phone IS NULL OR access.phone = ''))"
-                )
-            )
-            conn.execute(text("UPDATE agent_chat_user_accesses SET nick_name = COALESCE(nick_name, '') WHERE nick_name IS NULL"))
-            conn.execute(text("UPDATE agent_chat_user_accesses SET source = COALESCE(source, '') WHERE source IS NULL"))
-            conn.execute(text("UPDATE agent_chat_user_accesses SET create_time = COALESCE(create_time, '') WHERE create_time IS NULL"))
-            conn.execute(text("UPDATE agent_chat_user_accesses SET update_time = COALESCE(update_time, '') WHERE update_time IS NULL"))
-            conn.execute(text("UPDATE agent_chat_user_accesses SET is_auth = COALESCE(is_auth, FALSE) WHERE is_auth IS NULL"))
-            conn.execute(text("UPDATE agent_chat_user_accesses SET raw_payload = '{}'::json WHERE raw_payload IS NULL"))
-            conn.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS ix_agent_chat_user_access_agent_group_lookup "
-                    "ON agent_chat_user_accesses (agent_id, group_id, chat_user_id)"
-                )
-            )
-            conn.execute(
-                text(
-                    "INSERT INTO agent_chat_user_groups (agent_id, group_id, group_name, authorized_count, total_users, synced_at) "
-                    "SELECT "
-                    "agent_id, "
-                    "group_id, "
-                    "MAX(group_name), "
-                    "COALESCE(SUM(CASE WHEN is_auth THEN 1 ELSE 0 END), 0), "
-                    "COUNT(chat_user_id), "
-                    "COALESCE(MAX(synced_at), NOW()) "
-                    "FROM agent_chat_user_accesses "
-                    "GROUP BY agent_id, group_id "
-                    "ON CONFLICT (agent_id, group_id) DO UPDATE SET "
-                    "group_name = EXCLUDED.group_name, "
-                    "authorized_count = EXCLUDED.authorized_count, "
-                    "total_users = EXCLUDED.total_users, "
-                    "synced_at = EXCLUDED.synced_at"
-                )
-            )
-
-        if "sync_tasks" in tables:
-            columns = _column_names(inspector, "sync_tasks")
-            for name, ddl in (
-                ("task_type", "VARCHAR(64)"),
-                ("status", "VARCHAR(32)"),
-                ("config_id", "INTEGER"),
-                ("agent_id", "VARCHAR(64)"),
-                ("agent_name", "VARCHAR(255)"),
-                ("workspace_id", "VARCHAR(255)"),
-                ("workspace_name", "VARCHAR(255)"),
-                ("external_id", "VARCHAR(255)"),
-                ("total_steps", "INTEGER"),
-                ("completed_steps", "INTEGER"),
-                ("total_records", "INTEGER"),
-                ("processed_records", "INTEGER"),
-                ("message", "TEXT"),
-                ("error", "TEXT"),
-                ("payload", "JSON"),
-                ("celery_task_id", "VARCHAR(255)"),
-                ("created_by", "INTEGER"),
-                ("started_at", "TIMESTAMP WITH TIME ZONE"),
-                ("finished_at", "TIMESTAMP WITH TIME ZONE"),
-                ("updated_at", "TIMESTAMP WITH TIME ZONE"),
-            ):
-                if name not in columns:
-                    conn.execute(text(f"ALTER TABLE sync_tasks ADD COLUMN {name} {ddl}"))
-            conn.execute(text("UPDATE sync_tasks SET task_type = COALESCE(task_type, 'agent_chat_user_sync') WHERE task_type IS NULL"))
-            conn.execute(text("UPDATE sync_tasks SET status = COALESCE(status, 'pending') WHERE status IS NULL"))
-            conn.execute(text("UPDATE sync_tasks SET agent_name = COALESCE(agent_name, '') WHERE agent_name IS NULL"))
-            conn.execute(text("UPDATE sync_tasks SET workspace_id = COALESCE(workspace_id, '') WHERE workspace_id IS NULL"))
-            conn.execute(text("UPDATE sync_tasks SET workspace_name = COALESCE(workspace_name, '') WHERE workspace_name IS NULL"))
-            conn.execute(text("UPDATE sync_tasks SET external_id = COALESCE(external_id, '') WHERE external_id IS NULL"))
-            conn.execute(text("UPDATE sync_tasks SET total_steps = COALESCE(total_steps, 0) WHERE total_steps IS NULL"))
-            conn.execute(text("UPDATE sync_tasks SET completed_steps = COALESCE(completed_steps, 0) WHERE completed_steps IS NULL"))
-            conn.execute(text("UPDATE sync_tasks SET total_records = COALESCE(total_records, 0) WHERE total_records IS NULL"))
-            conn.execute(text("UPDATE sync_tasks SET processed_records = COALESCE(processed_records, 0) WHERE processed_records IS NULL"))
-            conn.execute(text("UPDATE sync_tasks SET message = COALESCE(message, '') WHERE message IS NULL"))
-            conn.execute(text("UPDATE sync_tasks SET error = COALESCE(error, '') WHERE error IS NULL"))
-            conn.execute(text("UPDATE sync_tasks SET payload = '{}'::json WHERE payload IS NULL"))
-            conn.execute(text("UPDATE sync_tasks SET celery_task_id = COALESCE(celery_task_id, '') WHERE celery_task_id IS NULL"))
-
-        if "users" in tables:
-            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_username_source ON users (username, source)"))
-
-        if "chat_users" in tables:
-            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_chat_users_username_source ON chat_users (username, source)"))
-
-        if "agent_chat_user_accesses" in tables:
-            conn.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS ix_agent_chat_user_access_agent_auth "
-                    "ON agent_chat_user_accesses (agent_id, is_auth)"
-                )
-            )
-            conn.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS ix_agent_chat_user_access_agent_group_auth "
-                    "ON agent_chat_user_accesses (agent_id, group_id, is_auth)"
-                )
-            )
-            conn.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS ix_agent_chat_user_access_agent_group_sort "
-                    "ON agent_chat_user_accesses (agent_id, group_id, nick_name, username)"
-                )
-            )
-
-        if "models" in tables:
-            columns = _column_names(inspector, "models")
-            if "model_type" not in columns:
-                conn.execute(text("ALTER TABLE models ADD COLUMN model_type VARCHAR(50)"))
-            conn.execute(
-                text(
-                    "UPDATE models "
-                    "SET model_type = COALESCE(NULLIF(model_type, ''), 'llm') "
-                    "WHERE model_type IS NULL OR model_type = ''"
-                )
-            )
-            conn.execute(text("ALTER TABLE models ALTER COLUMN model_type SET NOT NULL"))
-
-            if "base_model" not in columns:
-                conn.execute(text("ALTER TABLE models ADD COLUMN base_model VARCHAR(255)"))
-            conn.execute(
-                text(
-                    "UPDATE models "
-                    "SET base_model = COALESCE(base_model, '') "
-                    "WHERE base_model IS NULL"
-                )
-            )
-            conn.execute(text("ALTER TABLE models ALTER COLUMN base_model SET NOT NULL"))
-
-            if "api_url" not in columns:
-                conn.execute(text("ALTER TABLE models ADD COLUMN api_url VARCHAR(1024)"))
-            conn.execute(
-                text(
-                    "UPDATE models "
-                    "SET api_url = COALESCE(api_url, '') "
-                    "WHERE api_url IS NULL"
-                )
-            )
-            conn.execute(text("ALTER TABLE models ALTER COLUMN api_url SET NOT NULL"))
-
-            if "api_key" not in columns:
-                conn.execute(text("ALTER TABLE models ADD COLUMN api_key VARCHAR(1024)"))
-            conn.execute(
-                text(
-                    "UPDATE models "
-                    "SET api_key = COALESCE(api_key, '') "
-                    "WHERE api_key IS NULL"
-                )
-            )
-            conn.execute(text("ALTER TABLE models ALTER COLUMN api_key SET NOT NULL"))
-
-            if "parameters" not in columns:
-                conn.execute(text("ALTER TABLE models ADD COLUMN parameters JSON"))
-            conn.execute(text("UPDATE models SET parameters = '[]'::json WHERE parameters IS NULL"))
-            conn.execute(text("ALTER TABLE models ALTER COLUMN parameters SET NOT NULL"))
-
-    _backfill_agent_chat_links()
+def seed_bootstrap_defaults() -> None:
     _seed_roles()
     _seed_system_auth_settings()
     _seed_admin_user()
     _seed_admin_permissions()
     _seed_user_permissions()
     _seed_user_roles()
+
+
+def seed_defaults() -> None:
+    seed_bootstrap_defaults()
+    _backfill_agent_chat_links()
     _seed_agent_groups()
 
 
@@ -548,42 +94,12 @@ def _seed_system_auth_settings() -> None:
                 )
             )
             session.commit()
-            return
-
-        changed = False
-        enabled_methods = list(setting.enabled_methods or []) or ["local"]
-        if setting.enabled_methods != enabled_methods:
-            setting.enabled_methods = enabled_methods
-            changed = True
-        if not str(setting.default_login_method or "").strip():
-            setting.default_login_method = "local"
-            changed = True
-        if not str(setting.default_role or "").strip():
-            setting.default_role = "user"
-            changed = True
-        if changed:
-            session.commit()
 
 
 def _seed_admin_user() -> None:
     with Session(engine) as session:
         existing = session.query(models.User).filter(models.User.account == "admin").first()
         if existing:
-            changed = False
-            if existing.email.endswith(".local"):
-                existing.email = "admin@example.com"
-                changed = True
-            if existing.role != "admin":
-                existing.role = "admin"
-                changed = True
-            if (existing.source_provider or "") != "local":
-                existing.source_provider = "local"
-                changed = True
-            if existing.source_subject is None:
-                existing.source_subject = ""
-                changed = True
-            if changed:
-                session.commit()
             return
         admin_user = models.User(
             account="admin",
@@ -714,7 +230,6 @@ def _seed_user_roles() -> None:
                 if current in valid_roles:
                     target_roles.append(current)
 
-            # include existing role links for this user, keep as union
             for role_name in links_by_user.get(user.id, []):
                 if role_name in valid_roles and role_name not in target_roles:
                     target_roles.append(role_name)
@@ -728,14 +243,6 @@ def _seed_user_roles() -> None:
                     continue
                 session.add(models.UserRole(user_id=user.id, role_name=role_name))
                 existing_pairs.add(pair)
-                changed = True
-
-            if user.account == "admin" or "admin" in target_roles:
-                primary_role = "admin"
-            else:
-                primary_role = target_roles[0]
-            if user.role != primary_role:
-                user.role = primary_role
                 changed = True
 
         if changed:
@@ -760,3 +267,11 @@ def _seed_agent_groups() -> None:
                 created = True
         if created:
             session.commit()
+
+
+def main() -> None:
+    seed_defaults()
+
+
+if __name__ == "__main__":
+    main()

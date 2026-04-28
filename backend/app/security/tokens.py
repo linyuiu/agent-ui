@@ -1,4 +1,3 @@
-import secrets
 from datetime import datetime, timedelta, timezone
 
 from jose import jwt
@@ -9,7 +8,7 @@ from ..config import settings
 
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
-SECRET_KEY = settings.JWT_SECRET or secrets.token_urlsafe(32)
+SECRET_KEY = settings.JWT_SECRET or "agent-ui-development-secret-change-me"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES
 

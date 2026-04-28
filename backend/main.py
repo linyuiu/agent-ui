@@ -8,6 +8,7 @@ from app.api import register_routes
 from app.config import settings
 from app.migrations import ensure_schema
 from app.services.http_client import close_shared_async_client
+from app.services.redis_client import close_redis_client
 
 
 def create_app() -> FastAPI:
@@ -16,6 +17,7 @@ def create_app() -> FastAPI:
         await run_in_threadpool(ensure_schema)
         yield
         await close_shared_async_client()
+        await close_redis_client()
 
     app = FastAPI(title="Agent-UI", lifespan=lifespan)
 
@@ -25,6 +27,7 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["X-Session-Expires-At"],
     )
 
     @app.get("/health")

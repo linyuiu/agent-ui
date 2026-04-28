@@ -6,10 +6,17 @@ from sqlalchemy.orm import load_only
 from .. import models, schemas
 from ..auth import get_current_user
 from ..db import get_db
-from ..permissions import evaluate_permission_async, is_super_admin, require_menu_action_async
+from ..permissions import (
+    can_view_agent,
+    evaluate_permission_async,
+    get_user_access_async,
+    is_super_admin,
+    require_menu_action_async,
+)
 from ..services.chat_user_sync import (
     build_agent_chat_user_group_view,
     build_agent_chat_user_view,
+    list_user_synced_agent_ids_async,
     user_can_view_synced_agent_async,
 )
 from ..services.serializers import agent_detail, agent_summary
@@ -101,9 +108,14 @@ async def list_agents(
     if is_super_admin(current_user):
         return [agent_summary(agent, include_description=include_description) for agent in agents]
 
+    access = await get_user_access_async(db, current_user)
+    synced_agent_ids = set(await list_user_synced_agent_ids_async(db, user=current_user))
     visible: list[schemas.AgentSummary] = []
     for agent in agents:
-        if await _can_view_agent_async(db, current_user, agent):
+        agent_id = str(agent.id)
+        if can_view_agent(access, agent_id, _resolve_agent_groups(agent)) or (
+            bool(agent.is_synced) and agent_id in synced_agent_ids
+        ):
             visible.append(agent_summary(agent, include_description=include_description))
     return visible
 

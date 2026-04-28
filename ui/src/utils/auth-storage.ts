@@ -6,9 +6,9 @@ export type AuthUserSnapshot = {
 }
 
 export type PersistAuthSessionParams = {
-  token?: string
   user?: AuthUserSnapshot
   permissions?: unknown
+  sessionExpiresAt?: string
 }
 
 const AUTH_KEYS = [
@@ -18,6 +18,7 @@ const AUTH_KEYS = [
   'user_account',
   'user_role',
   'user_permissions',
+  'session_expires_at',
 ] as const
 
 export const clearAuthStorage = () => {
@@ -26,11 +27,7 @@ export const clearAuthStorage = () => {
 
 export const clearAuthSession = clearAuthStorage
 
-export const persistAuthSession = ({ token, user, permissions }: PersistAuthSessionParams) => {
-  if (token) {
-    localStorage.setItem('access_token', token)
-  }
-
+export const persistAuthSession = ({ user, permissions, sessionExpiresAt }: PersistAuthSessionParams) => {
   if (user?.email) {
     localStorage.setItem('user_email', user.email)
   }
@@ -49,5 +46,9 @@ export const persistAuthSession = ({ token, user, permissions }: PersistAuthSess
 
   if (typeof permissions !== 'undefined') {
     localStorage.setItem('user_permissions', JSON.stringify(permissions))
+  }
+
+  if (sessionExpiresAt) {
+    localStorage.setItem('session_expires_at', sessionExpiresAt)
   }
 }

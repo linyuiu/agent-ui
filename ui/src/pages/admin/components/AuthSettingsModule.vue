@@ -450,7 +450,7 @@ const protocolLabels: Record<SsoProviderProtocol, string> = {
   saml2: 'SAML2',
 }
 
-const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+const apiBase = import.meta.env.VITE_API_BASE_URL || window.location.origin
 
 const loading = ref(false)
 const saving = ref(false)

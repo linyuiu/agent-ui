@@ -1,13 +1,15 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import LoginView from '../pages/auth/LoginView.vue'
-import PasswordView from '../pages/auth/PasswordView.vue'
-import AppShell from '../layouts/AppShell.vue'
-import AgentsListView from '../pages/agents/AgentsListView.vue'
-import AgentDetailView from '../pages/agents/AgentDetailView.vue'
-import ModelsListView from '../pages/models/ModelsListView.vue'
-import ModelDetailView from '../pages/models/ModelDetailView.vue'
-import AdminView from '../pages/admin/AdminView.vue'
-import InfoView from '../pages/misc/InfoView.vue'
+import { clearSession, isSessionExpired } from '../services/session'
+
+const LoginView = () => import('../pages/auth/LoginView.vue')
+const PasswordView = () => import('../pages/auth/PasswordView.vue')
+const AppShell = () => import('../layouts/AppShell.vue')
+const AgentsListView = () => import('../pages/agents/AgentsListView.vue')
+const AgentDetailView = () => import('../pages/agents/AgentDetailView.vue')
+const ModelsListView = () => import('../pages/models/ModelsListView.vue')
+const ModelDetailView = () => import('../pages/models/ModelDetailView.vue')
+const AdminView = () => import('../pages/admin/AdminView.vue')
+const InfoView = () => import('../pages/misc/InfoView.vue')
 
 const routes = [
   { path: '/', redirect: '/login' },
@@ -115,8 +117,8 @@ const router = createRouter({
 router.beforeEach((to) => {
   if (!to.meta.requiresAuth) return true
 
-  const token = localStorage.getItem('access_token')
-  if (!token) {
+  if (isSessionExpired()) {
+    clearSession()
     return {
       name: 'login',
       query: {

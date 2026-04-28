@@ -184,6 +184,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { fetchModules, type ModuleSummary } from '../services/dashboard'
+import { logout } from '../services/auth'
 import { clearChatSession } from '../services/chat-session'
 import { clearAuthStorage } from '../utils/auth-storage'
 
@@ -280,7 +281,7 @@ const handleModuleClick = async (id: string) => {
 }
 
 const handleLogout = async () => {
-  await clearChatSession()
+  await Promise.allSettled([logout(), clearChatSession()])
   clearAuthStorage()
   showMenu.value = false
   await router.push({ name: 'login' })

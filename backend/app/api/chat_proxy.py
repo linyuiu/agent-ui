@@ -12,12 +12,13 @@ from urllib.parse import parse_qsl, quote, urlencode
 from urllib.parse import urlparse
 
 from .. import models
-from ..auth import get_user_from_token
 from ..config import settings
 from ..db import get_db
 from ..permissions import evaluate_permission_async, require_menu_action_async
+from ..services.auth_sessions import SESSION_EXPIRES_HEADER, extract_auth_token, set_auth_cookie, validate_session_token
 from ..services.chat_links import build_proxy_chat_url, build_upstream_chat_url
 from ..services.chat_user_sync import user_can_view_synced_agent_async
+from ..services.http_client import get_shared_async_client
 
 router = APIRouter(tags=["chat_proxy"])
 logger = logging.getLogger(__name__)
@@ -239,21 +240,9 @@ def _rewrite_query_for_upstream(agent: models.Agent, query: str) -> str:
     return urlencode(next_params, doseq=True)
 
 
-def _extract_bearer_token(request: Request) -> str:
-    raw = (request.headers.get("authorization") or "").strip()
-    if not raw:
-        return ""
-    parts = raw.split(None, 1)
-    if len(parts) != 2:
-        return ""
-    if parts[0].lower() != "bearer":
-        return ""
-    return parts[1].strip()
-
-
 async def _resolve_authenticated_context(request: Request, db: AsyncSession) -> tuple[str, models.User]:
     token_candidates = [
-        _extract_bearer_token(request),
+        extract_auth_token(request),
         (request.cookies.get(_AUTH_COOKIE) or "").strip(),
     ]
 
@@ -264,7 +253,7 @@ async def _resolve_authenticated_context(request: Request, db: AsyncSession) -> 
             continue
         checked.add(token)
         try:
-            user = await get_user_from_token(token, db)
+            user = await validate_session_token(token, db, request=request)
             return token, user
         except HTTPException:
             continue
@@ -342,10 +331,10 @@ async def create_chat_session(
     response: Response,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
-    token = _extract_bearer_token(request)
+    token = extract_auth_token(request)
     if not token:
         raise HTTPException(status_code=401, detail=_AUTH_REQUIRED_DETAIL)
-    await get_user_from_token(token, db)
+    await validate_session_token(token, db, request=request, response=response)
     _set_chat_auth_cookie(response, token, secure=request.url.scheme == "https")
     return {"status": "ok"}
 
@@ -484,34 +473,35 @@ async def proxy_chat(
     )
 
     try:
-        async with httpx.AsyncClient(follow_redirects=False, timeout=60.0) as client:
-            upstream: httpx.Response | None = None
-            for idx, upstream_path in enumerate(upstream_paths):
-                upstream_url = f"{agent.upstream_base_url.rstrip('/')}{upstream_path}"
-                if query_string:
-                    upstream_url = f"{upstream_url}?{query_string}"
-                candidate = await client.request(
+        client = get_shared_async_client()
+        upstream: httpx.Response | None = None
+        for idx, upstream_path in enumerate(upstream_paths):
+            upstream_url = f"{agent.upstream_base_url.rstrip('/')}{upstream_path}"
+            if query_string:
+                upstream_url = f"{upstream_url}?{query_string}"
+            candidate = await client.request(
+                request.method,
+                upstream_url,
+                headers=headers,
+                content=payload,
+                follow_redirects=False,
+            )
+            # Some upstream endpoints require /chat/{token}/..., others /chat/... .
+            # Try fallback path before returning a 404.
+            if _should_try_fallback_path(candidate) and idx + 1 < len(upstream_paths):
+                logger.info(
+                    "chat_proxy.fallback proxy_id=%s method=%s path=/chat/%s attempt=%s status=%s",
+                    agent.proxy_id,
                     request.method,
-                    upstream_url,
-                    headers=headers,
-                    content=payload,
+                    request_path,
+                    idx + 1,
+                    candidate.status_code,
                 )
-                # Some upstream endpoints require /chat/{token}/..., others /chat/... .
-                # Try fallback path before returning a 404.
-                if _should_try_fallback_path(candidate) and idx + 1 < len(upstream_paths):
-                    logger.info(
-                        "chat_proxy.fallback proxy_id=%s method=%s path=/chat/%s attempt=%s status=%s",
-                        agent.proxy_id,
-                        request.method,
-                        request_path,
-                        idx + 1,
-                        candidate.status_code,
-                    )
-                    continue
-                upstream = candidate
-                break
-            if upstream is None:
-                raise HTTPException(status_code=502, detail="Failed to proxy chat request")
+                continue
+            upstream = candidate
+            break
+        if upstream is None:
+            raise HTTPException(status_code=502, detail="Failed to proxy chat request")
     except httpx.HTTPError as exc:
         logger.exception(
             "chat_proxy.http_error proxy_id=%s method=%s path=/chat/%s",
@@ -540,4 +530,8 @@ async def proxy_chat(
         samesite="lax",
     )
     _set_chat_auth_cookie(response, auth_token, secure=request.url.scheme == "https")
+    session_expires_at = str(getattr(request.state, "session_expires_at", "") or "")
+    if session_expires_at:
+        response.headers[SESSION_EXPIRES_HEADER] = session_expires_at
+    set_auth_cookie(response, auth_token, request=request)
     return response

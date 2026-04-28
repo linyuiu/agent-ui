@@ -137,8 +137,8 @@ import {
   type SsoBindPending,
   type SsoProviderPublic,
 } from '../../services/sso'
-import { clearAuthSession, persistAuthSession } from '../../utils/auth-storage'
-import { encryptLoginCredentials } from '../../utils/login-crypto'
+import { clearAuthSession, persistAuthSession, type AuthUserSnapshot } from '../../utils/auth-storage'
+import { clearCachedLoginKey, encryptLoginCredentials } from '../../utils/login-crypto'
 
 const route = useRoute()
 const router = useRouter()
@@ -156,7 +156,7 @@ const bindProviderName = ref('')
 const pendingBindToken = ref('')
 const bindSuccessMessage = ref('')
 
-const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+const apiBase = import.meta.env.VITE_API_BASE_URL || ''
 
 const passwordProviders = computed(() => ssoProviders.value.filter((item) => item.login_mode === 'password'))
 const otherProviders = computed(() =>
@@ -217,13 +217,19 @@ const setBindPending = (payload: SsoBindPending) => {
   resetToLocalLogin()
 }
 
-const persistPermissions = async (token: string) => {
+const syncSessionExpiresAt = (response: Response) => {
+  const expiresAt = response.headers.get('x-session-expires-at')
+  if (expiresAt) {
+    persistAuthSession({ sessionExpiresAt: expiresAt })
+  }
+}
+
+const persistPermissions = async () => {
   try {
     const permResponse = await fetch(`${apiBase}/auth/permissions`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
+      credentials: 'include',
     })
+    syncSessionExpiresAt(permResponse)
     if (permResponse.ok) {
       const permPayload = await permResponse.json()
       persistAuthSession({ permissions: permPayload })
@@ -233,16 +239,19 @@ const persistPermissions = async (token: string) => {
   }
 }
 
-const finalizeLogin = async (payload: { access_token?: string; user?: unknown; permissions?: unknown }) => {
-  const token = payload?.access_token || ''
-  if (!token) throw new Error('登录响应缺少 token')
+const finalizeLogin = async (payload: {
+  access_token?: string
+  user?: unknown
+  permissions?: unknown
+  session_expires_at?: string
+}) => {
   persistAuthSession({
-    token,
-    user: payload?.user as Record<string, unknown>,
+    user: payload?.user as AuthUserSnapshot,
     permissions: payload?.permissions,
+    sessionExpiresAt: payload?.session_expires_at,
   })
   if (typeof payload?.permissions === 'undefined') {
-    await persistPermissions(token)
+    await persistPermissions()
   }
 
   const redirectTarget = getRedirectTarget()
@@ -260,59 +269,90 @@ const finalizeLogin = async (payload: { access_token?: string; user?: unknown; p
   await router.push({ name: 'home-agents' })
 }
 
+const parseLoginError = (payload: unknown, fallback: string) => {
+  const detail = (payload as { detail?: unknown })?.detail
+  if (typeof detail === 'string' && detail.trim()) return detail
+  if (detail && typeof detail === 'object') {
+    const message = (detail as { message?: unknown; msg?: unknown })?.message || (detail as { msg?: unknown })?.msg
+    if (typeof message === 'string' && message.trim()) return message
+  }
+  return fallback
+}
+
+const shouldRetryWithFreshLoginKey = (err: unknown) => {
+  const message = err instanceof Error ? err.message : String(err || '')
+  return (
+    message.includes('登录密钥已过期') ||
+    message.includes('登录数据解密失败') ||
+    message.includes('登录凭据处理失败') ||
+    message.includes('登录凭据解密失败')
+  )
+}
+
+const submitLoginOnce = async () => {
+  const encrypted = await encryptLoginCredentials(account.value, password.value)
+  if (passwordProviderKey.value) {
+    const result = await ssoPasswordLogin({
+      provider_key: passwordProviderKey.value,
+      encrypted_payload: encrypted.encrypted_payload,
+      key_id: encrypted.key_id,
+    })
+    if (result.type === 'bind_required') {
+      setBindPending(result.payload)
+      return
+    }
+    await finalizeLogin(result.payload)
+    return
+  }
+
+  const response = await fetch(`${apiBase}/auth/login`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      encrypted_payload: encrypted.encrypted_payload,
+      key_id: encrypted.key_id,
+    }),
+  })
+  const payload = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(parseLoginError(payload, '登录失败，请检查账号密码。'))
+  }
+
+  if (pendingBindToken.value) {
+    try {
+      await bindSsoIdentity(pendingBindToken.value)
+      bindSuccessMessage.value = `${bindProviderName.value || '单点账号'} 已绑定到当前本地账号，正在进入系统。`
+      pendingBindToken.value = ''
+      bindMessage.value = ''
+      await wait(1000)
+      bindProviderName.value = ''
+    } catch (err) {
+      clearAuthSession()
+      throw err
+    }
+  }
+
+  await finalizeLogin(payload)
+}
+
 const handleSubmit = async () => {
   error.value = ''
   bindSuccessMessage.value = ''
   loading.value = true
 
   try {
-    const encrypted = await encryptLoginCredentials(account.value, password.value)
-    if (passwordProviderKey.value) {
-      const result = await ssoPasswordLogin({
-        provider_key: passwordProviderKey.value,
-        encrypted_payload: encrypted.encrypted_payload,
-        key_id: encrypted.key_id,
-      })
-      if (result.type === 'bind_required') {
-        setBindPending(result.payload)
-        return
-      }
-      await finalizeLogin(result.payload)
-      return
-    }
-
-    const response = await fetch(`${apiBase}/auth/login`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        encrypted_payload: encrypted.encrypted_payload,
-        key_id: encrypted.key_id,
-      }),
-    })
-    const payload = await response.json().catch(() => ({}))
-    if (!response.ok) {
-      const detail = payload?.detail
-      throw new Error(typeof detail === 'string' ? detail : '登录失败，请检查账号密码。')
-    }
-
-    const token = String(payload?.access_token || '')
-    if (pendingBindToken.value) {
-      try {
-        await bindSsoIdentity(token, pendingBindToken.value)
-        bindSuccessMessage.value = `${bindProviderName.value || '单点账号'} 已绑定到当前本地账号，正在进入系统。`
-        pendingBindToken.value = ''
-        bindMessage.value = ''
-        await wait(1000)
-        bindProviderName.value = ''
-      } catch (err) {
-        clearAuthSession()
+    try {
+      await submitLoginOnce()
+    } catch (err) {
+      if (!shouldRetryWithFreshLoginKey(err)) {
         throw err
       }
+      clearCachedLoginKey()
+      await submitLoginOnce()
     }
-
-    await finalizeLogin(payload)
   } catch (err) {
     error.value = err instanceof Error ? err.message : '登录失败，请稍后重试。'
   } finally {
@@ -333,27 +373,19 @@ const handleProviderShortcut = (provider: SsoProviderPublic) => {
   handleRedirectSso(provider.key)
 }
 
-const consumeSsoHashToken = async () => {
-  const hash = window.location.hash.replace(/^#/, '')
-  if (!hash) return
-  const hashParams = new URLSearchParams(hash)
-  const token = hashParams.get('token') || ''
-  if (!token) return
-
+const consumeCookieLogin = async () => {
   loading.value = true
   error.value = ''
   try {
     const meResp = await fetch(`${apiBase}/auth/me`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
+      credentials: 'include',
     })
     if (!meResp.ok) {
-      throw new Error('单点登录状态失效，请重新登录')
+      return
     }
+    syncSessionExpiresAt(meResp)
     const user = await meResp.json()
-    history.replaceState(null, '', window.location.pathname + window.location.search)
-    await finalizeLogin({ access_token: token, user })
+    await finalizeLogin({ user })
   } catch (err) {
     error.value = err instanceof Error ? err.message : '单点登录失败'
   } finally {
@@ -374,7 +406,9 @@ const consumeBindQuery = () => {
 onMounted(async () => {
   applyLoginOptions(await fetchSsoLoginOptions())
   consumeBindQuery()
-  await consumeSsoHashToken()
+  if (route.query.sso === '1') {
+    await consumeCookieLogin()
+  }
 })
 </script>
 

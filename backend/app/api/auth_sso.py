@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from urllib.parse import parse_qsl
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import models, schemas, security
+from .. import models, schemas
 from ..auth import get_current_user
 from ..db import get_db
+from ..services.auth_sessions import cache_login_session, create_login_session, set_auth_cookie
 from ..services.sso import (
     PASSWORD_PROTOCOLS,
     REDIRECT_PROTOCOLS,
@@ -35,28 +36,36 @@ from .auth import _resolve_login_credentials
 router = APIRouter(prefix="/auth/sso", tags=["auth_sso"])
 
 
-async def _issue_login_response(db: AsyncSession, user: models.User) -> schemas.LoginResponse:
+async def _issue_login_response(
+    db: AsyncSession,
+    user: models.User,
+    *,
+    request: Request,
+    login_method: str,
+) -> tuple[schemas.LoginResponse, str]:
     if user.status != "active":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="该用户被禁用，无法登陆",
         )
-    token = security.create_access_token(
-        {
-            "sub": str(user.id),
-            "email": user.email,
-            "username": user.username,
-            "account": user.account,
-            "source": user.source,
-            "source_provider": user.source_provider,
-        }
-    )
     permissions = schemas.PermissionSummary(**(await summarize_permissions_async(db, user)))
-    return schemas.LoginResponse(
-        access_token=token,
-        token_type="bearer",
-        user=await build_user_public_async(db, user),
-        permissions=permissions,
+    token, session = await create_login_session(
+        db,
+        user=user,
+        request=request,
+        login_method=login_method,
+    )
+    await db.commit()
+    await cache_login_session(user, session)
+    return (
+        schemas.LoginResponse(
+            access_token="",
+            token_type="cookie",
+            user=await build_user_public_async(db, user),
+            permissions=permissions,
+            session_expires_at=session.expires_at,
+        ),
+        token,
     )
 
 
@@ -76,6 +85,8 @@ async def get_sso_login_options(db: AsyncSession = Depends(get_db)) -> schemas.S
 @router.post("/password-login", response_model=schemas.LoginResponse)
 async def sso_password_login(
     payload: schemas.SsoPasswordLoginRequest,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
 ):
     provider, setting = await get_provider_bundle_async(db, payload.provider_key, enabled_only=True)
@@ -89,6 +100,7 @@ async def sso_password_login(
         password=payload.password,
         encrypted_payload=payload.encrypted_payload,
         key_id=payload.key_id,
+        request=request,
     )
     profile = await authenticate_password_provider(provider, account, password)
     identity = identity_from_profile(provider, profile)
@@ -99,7 +111,13 @@ async def sso_password_login(
         return JSONResponse(status_code=409, content=exc.to_schema().model_dump())
     await db.commit()
     await db.refresh(user)
-    login_response = await _issue_login_response(db, user)
+    login_response, token = await _issue_login_response(
+        db,
+        user,
+        request=request,
+        login_method=f"sso:{provider.key}",
+    )
+    set_auth_cookie(response, token, request=request)
     return login_response
 
 
@@ -186,9 +204,16 @@ async def sso_login_callback(
         return RedirectResponse(url=redirect_url, status_code=307)
     await db.commit()
     await db.refresh(user)
-    login_payload = await _issue_login_response(db, user)
-    redirect_url = build_frontend_redirect(login_payload.access_token, target)
-    return RedirectResponse(url=redirect_url, status_code=307)
+    _login_payload, token = await _issue_login_response(
+        db,
+        user,
+        request=request,
+        login_method=f"sso:{provider.key}",
+    )
+    redirect_url = build_frontend_redirect(target)
+    response = RedirectResponse(url=redirect_url, status_code=307)
+    set_auth_cookie(response, token, request=request)
+    return response
 
 
 @router.post("/bind")

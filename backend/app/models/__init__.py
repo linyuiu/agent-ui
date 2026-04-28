@@ -16,6 +16,7 @@ from .entities import (
     SystemAuthSetting,
     User,
     UserChatBinding,
+    UserLoginSession,
     UserSsoBinding,
     UserRole,
 )
@@ -38,6 +39,7 @@ __all__ = [
     "SystemAuthSetting",
     "User",
     "UserChatBinding",
+    "UserLoginSession",
     "UserSsoBinding",
     "UserRole",
 ]

@@ -154,6 +154,7 @@ class LoginResponse(BaseModel):
     token_type: str
     user: UserPublic
     permissions: PermissionSummary | None = None
+    session_expires_at: datetime | None = None
 
 
 class PasswordChangeRequest(BaseModel):

@@ -1,14 +1,13 @@
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..models import User
-from ..security import ALGORITHM, SECRET_KEY
+from ..services.auth_sessions import extract_auth_token, validate_session_token, validate_session_token_sync
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login", auto_error=False)
 
 
 def _credentials_exception() -> HTTPException:
@@ -19,59 +18,20 @@ def _credentials_exception() -> HTTPException:
 
 
 async def get_user_from_token(token: str, db: AsyncSession) -> User:
-    credentials_exception = _credentials_exception()
-
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-    except JWTError as exc:
-        raise credentials_exception from exc
-
-    user_id = payload.get("sub")
-    if not user_id:
-        raise credentials_exception
-
-    try:
-        user_pk = int(user_id)
-    except (TypeError, ValueError) as exc:
-        raise credentials_exception from exc
-
-    user = await db.get(User, user_pk)
-    if not user:
-        raise credentials_exception
-    if user.status != "active":
-        raise credentials_exception
-
-    return user
+    return await validate_session_token(token, db)
 
 
 def get_user_from_token_sync(token: str, db: Session) -> User:
-    credentials_exception = _credentials_exception()
-
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-    except JWTError as exc:
-        raise credentials_exception from exc
-
-    user_id = payload.get("sub")
-    if not user_id:
-        raise credentials_exception
-
-    try:
-        user_pk = int(user_id)
-    except (TypeError, ValueError) as exc:
-        raise credentials_exception from exc
-
-    user = db.query(User).filter(User.id == user_pk).first()
-    if not user:
-        raise credentials_exception
-    if user.status != "active":
-        raise credentials_exception
-
-    return user
+    return validate_session_token_sync(token, db)
 
 
 async def get_current_user(
-    token: str = Depends(oauth2_scheme),
+    request: Request,
+    response: Response,
+    token: str | None = Depends(oauth2_scheme),
     db: AsyncSession = Depends(get_db),
 ) -> User:
-    return await get_user_from_token(token, db)
+    resolved_token = token or extract_auth_token(request)
+    if not resolved_token:
+        raise _credentials_exception()
+    return await validate_session_token(resolved_token, db, request=request, response=response)
